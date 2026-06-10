@@ -55,10 +55,17 @@ async function runMigrations() {
         notif_score         BOOLEAN DEFAULT TRUE,
         notif_data_com      BOOLEAN DEFAULT FALSE,
         onboarding_completo BOOLEAN DEFAULT FALSE,
+        apresentacao_vista  BOOLEAN DEFAULT FALSE,
         created_at          TIMESTAMPTZ DEFAULT NOW(),
         updated_at          TIMESTAMPTZ DEFAULT NOW()
       );
       CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON user_profiles(user_id);
+    `);
+
+    // Migration: adicionar apresentacao_vista se não existir
+    await pool.query(`
+      ALTER TABLE user_profiles
+        ADD COLUMN IF NOT EXISTS apresentacao_vista BOOLEAN DEFAULT FALSE;
     `);
 
     console.log('[MIGRATIONS] OK');

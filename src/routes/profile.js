@@ -53,20 +53,26 @@ router.get('/', async (req, res) => {
   }
 });
 
-// PUT /api/profile — atualiza nome/avatar
+// PUT /api/profile — atualiza nome/avatar/apresentacao_vista
 router.put('/', async (req, res) => {
   try {
     const userId = getUserId(req);
-    const { nome, avatar_url } = req.body;
+    const { nome, avatar_url, apresentacao_vista } = req.body;
+
+    // Monta SET dinâmico
+    const sets = ['updated_at = NOW()'];
+    const vals = [userId];
+    if (nome             !== undefined) { vals.push(nome);             sets.push(`nome = $${vals.length}`); }
+    if (avatar_url       !== undefined) { vals.push(avatar_url);       sets.push(`avatar_url = $${vals.length}`); }
+    if (apresentacao_vista !== undefined) { vals.push(apresentacao_vista); sets.push(`apresentacao_vista = $${vals.length}`); }
+
     const { rows } = await pool.query(
-      `INSERT INTO user_profiles (user_id, nome, avatar_url, updated_at)
-       VALUES ($1, $2, $3, NOW())
+      `INSERT INTO user_profiles (user_id, updated_at)
+       VALUES ($1, NOW())
        ON CONFLICT (user_id) DO UPDATE
-         SET nome = COALESCE(EXCLUDED.nome, user_profiles.nome),
-             avatar_url = COALESCE(EXCLUDED.avatar_url, user_profiles.avatar_url),
-             updated_at = NOW()
+         SET ${sets.join(', ')}
        RETURNING *`,
-      [userId, nome || null, avatar_url || null]
+      vals
     );
     res.json(rows[0]);
   } catch (err) {
