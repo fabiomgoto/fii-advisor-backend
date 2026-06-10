@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const axios = require('axios');
 const pool = require('../db/connection');
-const { calcularScore, getAction } = require('../engine/fii-scorer');
+const { calcularScore, calcularScorePerfil, getAction } = require('../engine/fii-scorer');
 const { buscarFII: buscarFundamentus, buscarTodosFIIs } = require('../collectors/fundamentus');
 const { gerarSintese } = require('../engine/fii-ai');
 const { enrichFII }   = require('../engine/fii-enricher');
@@ -149,6 +149,20 @@ router.get('/portfolio', async (req, res) => {
       }
     }));
 
+    // Busca perfil do usuário para score personalizado
+    let perfilUsuario = null;
+    try {
+      const { rows: profRows } = await pool.query(
+        'SELECT perfil_tipo, wizard_respostas FROM user_profiles WHERE user_id = $1',
+        [userId]
+      );
+      if (profRows.length) {
+        perfilUsuario = profRows[0].perfil_tipo
+          || profRows[0].wizard_respostas?.objetivo
+          || null;
+      }
+    } catch (_) {}
+
     const result = fiis.map(f => {
       const live    = precos[f.ticker]    || {};
       const db      = marketMap[f.ticker] || {};
@@ -156,7 +170,6 @@ router.get('/portfolio', async (req, res) => {
       const dados = {
         price:      live.price      ?? db.price      ?? null,
         dy_12m:     live.dy_12m     ?? db.dy_12m     ?? null,
-        // enricher tem pvp mais preciso (atualizado hoje)
         pvp:        enrich.pvp      ?? live.pvp      ?? db.pvp      ?? null,
         liquidity:  enrich.liquidity ?? live.liquidity ?? db.liquidity ?? null,
         properties: enrich.properties ?? live.properties ?? db.properties ?? null,
@@ -164,12 +177,15 @@ router.get('/portfolio', async (req, res) => {
         div_growth: enrich.div_growth ?? null,
         segment:    live.segment    ?? f.segment     ?? null,
       };
-      const score = calcularScore(dados);
+      const score       = calcularScore(dados);
+      const scorePerfil = perfilUsuario ? calcularScorePerfil(dados, perfilUsuario) : null;
       return {
         ...f,
         ...db,
         ...dados,
         score,
+        scorePerfil,
+        perfil: perfilUsuario,
         action: getAction(score),
         consistency: consistMap[f.ticker] ?? db.consistency ?? 0,
       };
@@ -886,7 +902,7 @@ async function rodarVarredura() {
     console.warn('[top10] síntese IA falhou:', e.message);
   }
 
-  // 5. Salva no banco
+  // 5. Salva no banco (síntese + histórico de varredura)
   try {
     await pool.query(
       `INSERT INTO top10_synthesis (generated_at, synthesis, top_tickers)
@@ -895,6 +911,19 @@ async function rodarVarredura() {
     );
   } catch (e) {
     console.warn('[top10] erro ao salvar no banco:', e.message);
+  }
+  try {
+    await pool.query(
+      `INSERT INTO fii_scan_history (total_scanned, top3, filtrados)
+       VALUES ($1, $2, $3)`,
+      [
+        enriched.filter(f => f != null).length,
+        JSON.stringify(top10.slice(0, 3).map(f => ({ ticker: f.ticker, score: f.score }))),
+        enriched.filter(f => f != null).length - top50.length,
+      ]
+    );
+  } catch (e) {
+    console.warn('[scan-history] erro ao salvar:', e.message);
   }
 
   const gerado_em = new Date().toISOString();
@@ -1146,6 +1175,34 @@ router.get('/score/diagnostico', async (req, res) => {
   }
 
   res.json({ diagnostico: resultados, gerado_em: new Date().toISOString() });
+});
+
+// GET /api/fiis/scan-history — últimas 10 varreduras
+router.get('/scan-history', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, scanned_at, total_scanned, top3, filtrados
+       FROM fii_scan_history ORDER BY scanned_at DESC LIMIT 10`
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/waitlist — lista de espera plano PRO
+router.post('/waitlist', async (req, res) => {
+  const { email } = req.body;
+  if (!email || !email.includes('@')) return res.status(400).json({ error: 'Email inválido' });
+  try {
+    await pool.query(
+      `INSERT INTO waitlist (email) VALUES ($1) ON CONFLICT (email) DO NOTHING`,
+      [email]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 module.exports = router;

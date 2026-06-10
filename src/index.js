@@ -68,6 +68,26 @@ async function runMigrations() {
         ADD COLUMN IF NOT EXISTS apresentacao_vista BOOLEAN DEFAULT FALSE;
     `);
 
+    // Tabela histórico de varreduras
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fii_scan_history (
+        id             SERIAL PRIMARY KEY,
+        scanned_at     TIMESTAMPTZ DEFAULT NOW(),
+        total_scanned  INTEGER,
+        top3           JSONB,
+        filtrados      INTEGER
+      );
+    `);
+
+    // Waitlist plano PRO
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS waitlist (
+        id         SERIAL PRIMARY KEY,
+        email      TEXT UNIQUE NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
     console.log('[MIGRATIONS] OK');
   } catch (e) {
     console.warn('[MIGRATIONS]', e.message);
