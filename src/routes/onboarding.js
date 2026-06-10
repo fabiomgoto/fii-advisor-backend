@@ -109,24 +109,39 @@ router.post('/wizard/complete', async (req, res) => {
       'SELECT wizard_respostas FROM user_profiles WHERE user_id = $1',
       [userId]
     );
-    const wizardData = rows[0]?.wizard_respostas;
-    if (!wizardData) return res.status(400).json({ error: 'Wizard não iniciado' });
+
+    // wizardData pode ser null se nenhum step foi salvo — usa objeto vazio (score resultará em ~50)
+    const wizardData = rows[0]?.wizard_respostas || {};
 
     const { score, profile, blocks } = calculateInvestorScore(wizardData);
 
-    await pool.query(
+    // Tenta UPDATE; se a row não existir, cria com INSERT
+    const updated = await pool.query(
       `UPDATE user_profiles
-       SET wizard_completo = TRUE,
-           investor_score  = $1,
+       SET wizard_completo  = TRUE,
+           investor_score   = $1,
            investor_profile = $2,
-           perfil_tipo     = $2,
-           updated_at      = NOW()
-       WHERE user_id = $3`,
+           perfil_tipo      = $2,
+           updated_at       = NOW()
+       WHERE user_id = $3
+       RETURNING user_id`,
       [score, profile, userId]
     );
 
+    if (updated.rowCount === 0) {
+      // Linha não existe — cria
+      await pool.query(
+        `INSERT INTO user_profiles (user_id, wizard_completo, investor_score, investor_profile, perfil_tipo)
+         VALUES ($1, TRUE, $2, $3, $3)
+         ON CONFLICT (user_id) DO UPDATE
+           SET wizard_completo = TRUE, investor_score = $2, investor_profile = $3, perfil_tipo = $3, updated_at = NOW()`,
+        [userId, score, profile]
+      );
+    }
+
     res.json({ score, profile, blocks });
   } catch (e) {
+    console.error('[wizard/complete] erro:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
