@@ -14,15 +14,15 @@ app.use(express.json());
 app.use('/api/fiis',    require('./routes/fiis'));
 app.use('/api/profile', require('./routes/profile'));
 
-// ── Health check ──────────────────────────────────────────────────────────────
-app.get('/api/health', (req, res) => {
-  res.json({
-    status:    'ok',
-    service:   'fii-advisor-backend',
-    version:   '1.0.0',
-    timestamp: new Date().toISOString(),
-  });
+// ── Health check (Railway usa /health; alias /api/health para compatibilidade) ─
+const healthPayload = (req, res) => res.json({
+  status:    'ok',
+  service:   'fii-advisor-backend',
+  version:   '1.0.0',
+  timestamp: new Date().toISOString(),
 });
+app.get('/health',     healthPayload);
+app.get('/api/health', healthPayload);
 
 // ── Migrations ────────────────────────────────────────────────────────────────
 async function runMigrations() {
