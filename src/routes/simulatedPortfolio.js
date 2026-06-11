@@ -25,15 +25,12 @@ async function getPortfolio(userId) {
 router.post('/create', async (req, res) => {
   const userId = req.userId;
   try {
-    const existing = await pool.query(
-      'SELECT id FROM simulated_portfolios WHERE user_id = $1', [userId]
-    );
-    if (existing.rows.length) {
-      return res.json({ message: 'Carteira já existe', portfolio: existing.rows[0] });
-    }
+    // INSERT ... ON CONFLICT elimina TOCTOU de SELECT+INSERT separados
     const { rows } = await pool.query(
       `INSERT INTO simulated_portfolios (user_id, initial_balance, current_balance)
-       VALUES ($1, 10000.00, 10000.00) RETURNING *`,
+       VALUES ($1, 10000.00, 10000.00)
+       ON CONFLICT (user_id) DO UPDATE SET updated_at = NOW()
+       RETURNING *`,
       [userId]
     );
     res.json({ success: true, portfolio: rows[0] });

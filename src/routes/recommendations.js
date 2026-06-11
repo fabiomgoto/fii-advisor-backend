@@ -172,8 +172,8 @@ router.post('/generate', async (req, res) => {
 
     res.json({ id: saved.rows[0].id, recommendation });
   } catch (e) {
-    console.error('[recommendations] erro:', e.message);
-    res.status(500).json({ error: e.message });
+    console.error('[recommendations/generate]', e.message);
+    res.status(500).json({ error: 'Erro interno. Tente novamente.' });
   }
 });
 
@@ -189,7 +189,7 @@ router.get('/latest', async (req, res) => {
     if (!rows.length) return res.status(404).json({ error: 'Nenhuma recomendação encontrada' });
     res.json(rows[0]);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error("[recommendations]", e.message); res.status(500).json({ error: "Erro interno. Tente novamente." });
   }
 });
 
@@ -203,7 +203,7 @@ router.post('/:id/accept', async (req, res) => {
     );
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error("[recommendations]", e.message); res.status(500).json({ error: "Erro interno. Tente novamente." });
   }
 });
 
@@ -221,7 +221,7 @@ router.get('/:id/explain/:ticker', async (req, res) => {
     if (!fii) return res.status(404).json({ error: 'FII não encontrado na recomendação' });
     res.json({ ticker, explanation: fii.explanation });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error("[recommendations]", e.message); res.status(500).json({ error: "Erro interno. Tente novamente." });
   }
 });
 

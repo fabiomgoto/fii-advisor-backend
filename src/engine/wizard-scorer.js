@@ -88,7 +88,7 @@ function scoreExperience(s6) {
     '3_5y':   75,
     more_5y:  100,
   };
-  return map[s6.investment_time] || 20;
+  return map[s6.investment_time] ?? 0;
 }
 
 function scoreRiskTolerance(s7) {
@@ -100,8 +100,11 @@ function scoreRiskTolerance(s7) {
 }
 
 function scoreIncomeNeed(s8) {
-  if (s8.needs_income_now)    return 30;
-  if (s8.reinvest_dividends)  return 100;
+  // Normaliza: aceita boolean ou string
+  const needsNow   = s8.needs_income_now   === true || s8.needs_income_now   === 'true';
+  const reinvest   = s8.reinvest_dividends === true || s8.reinvest_dividends === 'true';
+  if (needsNow)  return 30;
+  if (reinvest)  return 100;
   return 60;
 }
 

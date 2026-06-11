@@ -28,7 +28,8 @@ router.post('/triagem', async (req, res) => {
     );
     res.json({ success: true, journey_level });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('[onboarding/triagem]', e.message);
+    res.status(500).json({ error: 'Erro interno. Tente novamente.' });
   }
 });
 
@@ -52,7 +53,7 @@ router.get('/status', async (req, res) => {
     }
     res.json(rows[0]);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: 'Erro interno. Tente novamente.' });
   }
 });
 
@@ -64,23 +65,22 @@ router.post('/wizard/step/:step', async (req, res) => {
   const userId = req.userId;
 
   try {
-    const current = await pool.query(
-      'SELECT wizard_respostas FROM user_profiles WHERE user_id = $1',
-      [userId]
-    );
-    const existing = current.rows[0]?.wizard_respostas || {};
-    existing[`step${step}`] = data;
+    // Merge atômico com || JSONB — elimina race condition de read-modify-write
+    const stepKey = `step${parseInt(step)}`;
+    const stepJson = JSON.stringify({ [stepKey]: data });
 
     await pool.query(
       `INSERT INTO user_profiles (user_id, wizard_respostas)
-       VALUES ($1, $2)
+       VALUES ($1, $2::jsonb)
        ON CONFLICT (user_id) DO UPDATE
-         SET wizard_respostas = $2, updated_at = NOW()`,
-      [userId, JSON.stringify(existing)]
+         SET wizard_respostas = COALESCE(user_profiles.wizard_respostas, '{}') || $2::jsonb,
+             updated_at = NOW()`,
+      [userId, stepJson]
     );
     res.json({ success: true, step: parseInt(step) });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('[wizard/step]', e.message);
+    res.status(500).json({ error: 'Erro ao salvar etapa do wizard' });
   }
 });
 
@@ -96,7 +96,7 @@ router.get('/wizard/progress', async (req, res) => {
     const completedSteps = Object.keys(wizardData).length;
     res.json({ wizard_data: wizardData, completed_steps: completedSteps, total_steps: 10 });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: 'Erro interno. Tente novamente.' });
   }
 });
 
@@ -142,7 +142,7 @@ router.post('/wizard/complete', async (req, res) => {
     res.json({ score, profile, blocks });
   } catch (e) {
     console.error('[wizard/complete] erro:', e.message);
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: 'Erro interno. Tente novamente.' });
   }
 });
 
@@ -157,7 +157,7 @@ router.get('/wizard/result', async (req, res) => {
     if (!rows[0]?.investor_score) return res.status(404).json({ error: 'Resultado não disponível' });
     res.json({ score: rows[0].investor_score, profile: rows[0].investor_profile });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: 'Erro interno. Tente novamente.' });
   }
 });
 
@@ -173,7 +173,7 @@ router.post('/tour/complete', async (req, res) => {
     );
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: 'Erro interno. Tente novamente.' });
   }
 });
 
@@ -187,7 +187,7 @@ router.patch('/tour/reset', async (req, res) => {
     );
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: 'Erro interno. Tente novamente.' });
   }
 });
 
@@ -204,7 +204,7 @@ router.post('/complete', async (req, res) => {
     );
     res.json({ success: true });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    res.status(500).json({ error: 'Erro interno. Tente novamente.' });
   }
 });
 
