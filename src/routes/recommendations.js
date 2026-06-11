@@ -102,11 +102,10 @@ router.post('/generate', async (req, res) => {
     const preferences  = wizardData?.step9  || {};
     const incomeNeed   = wizardData?.step8?.needs_income_now || false;
 
-    // Buscar top FIIs com score
+    // Buscar top FIIs com score — usa fiis_market (populada pelo fii-scanner diário)
     const fiisRes = await pool.query(
-      `SELECT ticker, segment, dy_12m, pvp, vacancy, liquidity, leverage,
-              properties, div_growth, wault, ultimo_dy_valor, price
-       FROM fii_dados
+      `SELECT ticker, name, dy_12m, pvp, liquidity, net_worth, price, score, action
+       FROM fiis_market
        WHERE score IS NOT NULL
        ORDER BY score DESC
        LIMIT 100`
@@ -114,11 +113,13 @@ router.post('/generate', async (req, res) => {
 
     let eligible = fiisRes.rows;
 
-    // Aplicar restrições do wizard
-    if (restrictions.no_papel)   eligible = eligible.filter(f => f.segment !== 'Recebíveis');
-    if (restrictions.no_shopping) eligible = eligible.filter(f => f.segment !== 'Shopping');
-    if (restrictions.min_dy)     eligible = eligible.filter(f => (f.dy_12m || 0) >= restrictions.min_dy);
-    if (restrictions.max_pvp)    eligible = eligible.filter(f => (f.pvp || 99) <= restrictions.max_pvp);
+    if (eligible.length === 0) {
+      return res.status(503).json({ error: 'Base de FIIs ainda não disponível. Tente novamente em alguns minutos.' });
+    }
+
+    // Aplicar restrições do wizard (campos disponíveis em fiis_market)
+    if (restrictions.min_dy)  eligible = eligible.filter(f => (f.dy_12m || 0) >= restrictions.min_dy);
+    if (restrictions.max_pvp) eligible = eligible.filter(f => (f.pvp || 99) <= restrictions.max_pvp);
     if (restrictions.min_liquidity) eligible = eligible.filter(f => (f.liquidity || 0) >= restrictions.min_liquidity);
 
     // Priorizar renda se necessário
@@ -134,21 +135,21 @@ router.post('/generate', async (req, res) => {
     const allocation = calculateAllocation(selected);
 
     const fiisWithExplanation = selected.map(f => ({
-      ticker:      f.ticker,
-      segment:     f.segment,
-      dy:          f.dy_12m,
-      pvp:         f.pvp,
-      liquidity:   f.liquidity,
-      price:       f.price,
-      rec_score:   f.rec_score,
-      weight:      allocation[f.ticker] || 20,
+      ticker:    f.ticker,
+      segmento:  f.segment || null,    // campo correto lido pelo frontend
+      dy_12m:    f.dy_12m,             // frontend lê fii.dy_12m
+      p_vp:      f.pvp,                // frontend lê fii.p_vp
+      liquidity: f.liquidity,
+      price:     f.price,
+      score:     f.rec_score,          // frontend lê fii.score
+      weight:    allocation[f.ticker] || 20,
       explanation: buildExplanation(f, wizardData || {}),
     }));
 
     // Alocação por segmento
     const segAlloc = {};
     fiisWithExplanation.forEach(f => {
-      const seg = f.segment || 'Outros';
+      const seg = f.segmento || 'Outros';
       segAlloc[seg] = (segAlloc[seg] || 0) + (f.weight || 0);
     });
 
