@@ -94,8 +94,8 @@ function scoreExperience(s6) {
 function scoreRiskTolerance(s7) {
   const dropMap = { sell_all: 10, sell_part: 40, do_nothing: 70, buy_more: 100 };
   const prefMap = { low_risk: 10, balanced: 50, high_return: 100 };
-  const drop = dropMap[s7.drop_reaction]         || 30;
-  const pref = prefMap[s7.volatility_preference] || 30;
+  const drop = dropMap[s7.drop_reaction]         ?? 0;
+  const pref = prefMap[s7.volatility_preference] ?? 0;
   return Math.round((drop + pref) / 2);
 }
 

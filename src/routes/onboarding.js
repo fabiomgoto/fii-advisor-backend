@@ -64,9 +64,15 @@ router.post('/wizard/step/:step', async (req, res) => {
   const { data } = req.body;
   const userId = req.userId;
 
+  // GAP-V1: valida range do step antes de qualquer processamento
+  const stepNum = parseInt(step, 10);
+  if (isNaN(stepNum) || stepNum < 1 || stepNum > 10) {
+    return res.status(400).json({ error: 'Step inválido. Deve ser um número entre 1 e 10.' });
+  }
+
   try {
     // Merge atômico com || JSONB — elimina race condition de read-modify-write
-    const stepKey = `step${parseInt(step)}`;
+    const stepKey = `step${stepNum}`;
     const stepJson = JSON.stringify({ [stepKey]: data });
 
     await pool.query(
@@ -77,7 +83,7 @@ router.post('/wizard/step/:step', async (req, res) => {
              updated_at = NOW()`,
       [userId, stepJson]
     );
-    res.json({ success: true, step: parseInt(step) });
+    res.json({ success: true, step: stepNum });
   } catch (e) {
     console.error('[wizard/step]', e.message);
     res.status(500).json({ error: 'Erro ao salvar etapa do wizard' });
@@ -93,7 +99,11 @@ router.get('/wizard/progress', async (req, res) => {
       [userId]
     );
     const wizardData = rows[0]?.wizard_respostas || {};
-    const completedSteps = Object.keys(wizardData).length;
+    // FLOW-1: usa o maior número de step respondido em vez de contar keys (evita gaps)
+    const stepNums = Object.keys(wizardData)
+      .map(k => parseInt(k.replace('step', ''), 10))
+      .filter(n => !isNaN(n));
+    const completedSteps = stepNums.length > 0 ? Math.max(...stepNums) : 0;
     res.json({ wizard_data: wizardData, completed_steps: completedSteps, total_steps: 10 });
   } catch (e) {
     res.status(500).json({ error: 'Erro interno. Tente novamente.' });
@@ -154,7 +164,7 @@ router.get('/wizard/result', async (req, res) => {
       'SELECT investor_score, investor_profile, wizard_respostas FROM user_profiles WHERE user_id = $1',
       [userId]
     );
-    if (!rows[0]?.investor_score) return res.status(404).json({ error: 'Resultado não disponível' });
+    if (rows[0]?.investor_score == null) return res.status(404).json({ error: 'Resultado não disponível' });
     res.json({ score: rows[0].investor_score, profile: rows[0].investor_profile });
   } catch (e) {
     res.status(500).json({ error: 'Erro interno. Tente novamente.' });
