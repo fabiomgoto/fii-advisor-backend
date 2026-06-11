@@ -146,7 +146,33 @@ async function runMigrations() {
       );
     `);
 
-    // Cache de dados de FIIs para recomendações
+    // Mercado de FIIs (populada pelo fii-scanner diário)
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS fiis_market (
+        ticker     VARCHAR(10) PRIMARY KEY,
+        name       TEXT,
+        price      DECIMAL(10,4),
+        dy_12m     DECIMAL(8,4),
+        pvp        DECIMAL(8,4),
+        liquidity  DECIMAL(16,2),
+        net_worth  DECIMAL(16,2),
+        score      INTEGER,
+        action     TEXT,
+        scanned_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `);
+
+    // Síntese IA do top 10
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS top10_synthesis (
+        id           SERIAL PRIMARY KEY,
+        generated_at TIMESTAMPTZ DEFAULT NOW(),
+        synthesis    TEXT,
+        top_tickers  JSONB
+      );
+    `);
+
+    // Cache de dados de FIIs para recomendações (legado)
     await pool.query(`
       CREATE TABLE IF NOT EXISTS fii_dados (
         ticker       VARCHAR(10) PRIMARY KEY,
@@ -186,6 +212,7 @@ async function runMigrations() {
 // ── Scheduler ─────────────────────────────────────────────────────────────────
 function iniciarScheduler() {
   const cron = require('node-cron');
+  const pool = require('./db/connection');
   const { sincronizarTodosProventos } = require('./scheduler/fii-proventos-sync');
 
   // Sync de proventos: diariamente às 20h30 (Brasília)
@@ -221,6 +248,31 @@ function iniciarScheduler() {
       console.error('[CRON] Erro update preços:', err.message);
     }
   }, { timezone: 'America/Sao_Paulo' });
+
+  // Varredura de mercado (popula fiis_market para recomendações): dias úteis às 7h
+  const { rodarFIIScanner } = require('./scheduler/fii-scanner');
+  cron.schedule('0 7 * * 1-5', async () => {
+    console.log('[CRON] Rodando varredura de FIIs...');
+    try {
+      await rodarFIIScanner();
+      console.log('[CRON] Varredura concluída');
+    } catch (err) {
+      console.error('[CRON] Erro varredura:', err.message);
+    }
+  }, { timezone: 'America/Sao_Paulo' });
+
+  // Executar varredura imediatamente no startup para popular fiis_market
+  setImmediate(async () => {
+    try {
+      const { rows } = await pool.query('SELECT COUNT(*) FROM fiis_market');
+      if (parseInt(rows[0].count) === 0) {
+        console.log('[STARTUP] fiis_market vazia — rodando varredura inicial...');
+        await rodarFIIScanner();
+      }
+    } catch (err) {
+      console.warn('[STARTUP] Varredura inicial falhou:', err.message);
+    }
+  });
 
   console.log('[CRON] Scheduler FII iniciado');
 }

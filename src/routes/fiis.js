@@ -278,6 +278,7 @@ router.post('/contributions', async (req, res) => {
 // PUT /api/fiis/contributions/:id — editar aporte
 router.put('/contributions/:id', async (req, res) => {
   const { date, quantity, price_paid, broker } = req.body;
+  const userId = getUserId(req); // garante que só o dono pode editar (evita IDOR)
   try {
     const { rows } = await pool.query(
       `UPDATE contributions
@@ -285,13 +286,14 @@ router.put('/contributions/:id', async (req, res) => {
            quantity = COALESCE($2, quantity),
            price_paid = COALESCE($3, price_paid),
            broker = COALESCE($4, broker)
-       WHERE id = $5 RETURNING *`,
-      [date, quantity, price_paid, broker, req.params.id]
+       WHERE id = $5 AND user_id = $6 RETURNING *`,
+      [date, quantity, price_paid, broker, req.params.id, userId]
     );
     if (!rows.length) return res.status(404).json({ error: 'Aporte não encontrado' });
     res.json(rows[0]);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('[contributions/update]', err.message);
+    res.status(500).json({ error: 'Erro ao atualizar aporte' });
   }
 });
 
