@@ -198,8 +198,8 @@ router.post('/:id/accept', async (req, res) => {
   const userId = req.userId;
   try {
     await pool.query(
-      'UPDATE portfolio_recommendations SET accepted = TRUE WHERE user_id = $1',
-      [userId]
+      'UPDATE portfolio_recommendations SET accepted = TRUE WHERE user_id = $1 AND id = $2',
+      [userId, req.params.id]
     );
     res.json({ success: true });
   } catch (e) {

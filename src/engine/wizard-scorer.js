@@ -59,7 +59,9 @@ function scoreFinancialCapacity(s2, s3) {
 }
 
 function scoreEmergencyReserve(s3) {
-  if (!s3.has_reserve) return 0;
+  // Normaliza: aceita boolean ou string "true"/"false"
+  const hasReserve = s3.has_reserve === true || s3.has_reserve === 'true';
+  if (!hasReserve) return 0;
   const months = parseInt(s3.reserve_months) || 0;
   if (months < 3)  return 20;
   if (months < 6)  return 50;
@@ -75,7 +77,7 @@ function scoreHorizon(s5) {
     '5_10y':  85,
     more_10y: 100,
   };
-  return map[s5.horizon] || 50;
+  return map[s5.horizon] ?? 0; // 0 quando não respondido, não infla o score
 }
 
 function scoreExperience(s6) {

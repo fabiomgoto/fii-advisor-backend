@@ -167,6 +167,16 @@ async function runMigrations() {
       );
     `);
 
+    // Índices para performance de queries frequentes
+    await pool.query(`
+      CREATE INDEX IF NOT EXISTS idx_sim_positions_portfolio
+        ON simulated_positions(portfolio_id);
+      CREATE INDEX IF NOT EXISTS idx_sim_transactions_portfolio_date
+        ON simulated_transactions(portfolio_id, executed_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_portfolio_recommendations_user
+        ON portfolio_recommendations(user_id);
+    `);
+
     console.log('[MIGRATIONS] OK');
   } catch (e) {
     console.warn('[MIGRATIONS]', e.message);
@@ -216,11 +226,14 @@ function iniciarScheduler() {
 }
 
 // ── Start ─────────────────────────────────────────────────────────────────────
-app.listen(PORT, async () => {
-  console.log(`\n🚀 FII Advisor API rodando na porta ${PORT}`);
-  console.log(`   Health: http://localhost:${PORT}/api/health\n`);
+// Migrations rodam ANTES do servidor aceitar conexões (evita race condition em cold start)
+(async () => {
   await runMigrations();
   iniciarScheduler();
-});
+  app.listen(PORT, () => {
+    console.log(`\n🚀 FII Advisor API rodando na porta ${PORT}`);
+    console.log(`   Health: http://localhost:${PORT}/api/health\n`);
+  });
+})();
 
 module.exports = app;

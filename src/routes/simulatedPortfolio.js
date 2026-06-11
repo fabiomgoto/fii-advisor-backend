@@ -25,14 +25,12 @@ async function getPortfolio(userId) {
 router.post('/create', async (req, res) => {
   const userId = req.userId;
   try {
-    // Verificar se já existe
     const existing = await pool.query(
       'SELECT id FROM simulated_portfolios WHERE user_id = $1', [userId]
     );
     if (existing.rows.length) {
       return res.json({ message: 'Carteira já existe', portfolio: existing.rows[0] });
     }
-
     const { rows } = await pool.query(
       `INSERT INTO simulated_portfolios (user_id, initial_balance, current_balance)
        VALUES ($1, 10000.00, 10000.00) RETURNING *`,
@@ -40,7 +38,8 @@ router.post('/create', async (req, res) => {
     );
     res.json({ success: true, portfolio: rows[0] });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('[simulated-portfolio/create]', e.message);
+    res.status(500).json({ error: 'Erro ao criar carteira simulada' });
   }
 });
 
@@ -56,7 +55,6 @@ router.get('/', async (req, res) => {
       [portfolio.id]
     );
 
-    // Calcular valor total das posições
     let positionsValue = 0;
     const enriched = positions.map(p => {
       const curPrice  = p.current_price || p.avg_price;
@@ -68,7 +66,6 @@ router.get('/', async (req, res) => {
     });
 
     const totalValue = portfolio.current_balance + positionsValue;
-
     res.json({
       portfolio: {
         ...portfolio,
@@ -79,7 +76,8 @@ router.get('/', async (req, res) => {
       positions: enriched,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('[simulated-portfolio/get]', e.message);
+    res.status(500).json({ error: 'Erro ao carregar carteira' });
   }
 });
 
@@ -87,36 +85,39 @@ router.get('/', async (req, res) => {
 router.post('/buy', async (req, res) => {
   const { ticker, quantity } = req.body;
   const userId = req.userId;
+  const qty = Number(quantity);
 
-  if (!ticker || !quantity || quantity <= 0 || !Number.isInteger(Number(quantity))) {
+  if (!ticker || !qty || qty <= 0 || !Number.isInteger(qty)) {
     return res.status(400).json({ error: 'Ticker e quantidade inteira positiva são obrigatórios' });
   }
 
+  const client = await pool.connect();
   try {
-    const portfolio = await getPortfolio(userId);
-    if (!portfolio) return res.status(404).json({ error: 'Carteira não encontrada. Crie-a primeiro.' });
+    await client.query('BEGIN');
+
+    const { rows: pRows } = await client.query(
+      'SELECT * FROM simulated_portfolios WHERE user_id = $1 FOR UPDATE',
+      [userId]
+    );
+    const portfolio = pRows[0];
+    if (!portfolio) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Carteira não encontrada. Crie-a primeiro.' }); }
 
     const price = await getCurrentPrice(ticker.toUpperCase());
-    if (!price) return res.status(400).json({ error: `Preço de ${ticker} indisponível no momento` });
+    if (!price) { await client.query('ROLLBACK'); return res.status(400).json({ error: `Preço de ${ticker} indisponível no momento` }); }
 
-    const total = price * Number(quantity);
+    const total = price * qty;
     if (total > portfolio.current_balance) {
-      return res.status(400).json({
-        error: 'Saldo insuficiente',
-        available: portfolio.current_balance,
-        needed: total,
-      });
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Saldo insuficiente', available: portfolio.current_balance, needed: total });
     }
 
-    // Registrar transação
-    await pool.query(
+    await client.query(
       `INSERT INTO simulated_transactions (portfolio_id, ticker, operation, quantity, price, total)
        VALUES ($1, $2, 'buy', $3, $4, $5)`,
-      [portfolio.id, ticker.toUpperCase(), Number(quantity), price, total]
+      [portfolio.id, ticker.toUpperCase(), qty, price, total]
     );
 
-    // Upsert posição com preço médio
-    await pool.query(
+    await client.query(
       `INSERT INTO simulated_positions (portfolio_id, ticker, quantity, avg_price, current_price)
        VALUES ($1, $2, $3, $4, $4)
        ON CONFLICT (portfolio_id, ticker) DO UPDATE SET
@@ -125,20 +126,22 @@ router.post('/buy', async (req, res) => {
                          / (simulated_positions.quantity + $3),
          current_price = $4,
          last_updated  = NOW()`,
-      [portfolio.id, ticker.toUpperCase(), Number(quantity), price]
+      [portfolio.id, ticker.toUpperCase(), qty, price]
     );
 
-    // Deduzir saldo
-    await pool.query(
-      `UPDATE simulated_portfolios
-       SET current_balance = current_balance - $1, updated_at = NOW()
-       WHERE id = $2`,
+    await client.query(
+      `UPDATE simulated_portfolios SET current_balance = current_balance - $1, updated_at = NOW() WHERE id = $2`,
       [total, portfolio.id]
     );
 
-    res.json({ success: true, ticker: ticker.toUpperCase(), quantity: Number(quantity), price, total });
+    await client.query('COMMIT');
+    res.json({ success: true, ticker: ticker.toUpperCase(), quantity: qty, price, total });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    await client.query('ROLLBACK');
+    console.error('[simulated-portfolio/buy]', e.message);
+    res.status(500).json({ error: 'Erro ao processar compra' });
+  } finally {
+    client.release();
   }
 });
 
@@ -146,60 +149,68 @@ router.post('/buy', async (req, res) => {
 router.post('/sell', async (req, res) => {
   const { ticker, quantity } = req.body;
   const userId = req.userId;
+  const qty = Number(quantity);
 
-  if (!ticker || !quantity || quantity <= 0) {
-    return res.status(400).json({ error: 'Ticker e quantidade são obrigatórios' });
+  if (!ticker || !qty || qty <= 0 || !Number.isInteger(qty)) {
+    return res.status(400).json({ error: 'Ticker e quantidade inteira positiva são obrigatórios' });
   }
 
+  const client = await pool.connect();
   try {
-    const portfolio = await getPortfolio(userId);
-    if (!portfolio) return res.status(404).json({ error: 'Carteira não encontrada' });
+    await client.query('BEGIN');
 
-    const { rows: pos } = await pool.query(
-      'SELECT * FROM simulated_positions WHERE portfolio_id = $1 AND ticker = $2',
+    const { rows: pRows } = await client.query(
+      'SELECT * FROM simulated_portfolios WHERE user_id = $1 FOR UPDATE',
+      [userId]
+    );
+    const portfolio = pRows[0];
+    if (!portfolio) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Carteira não encontrada' }); }
+
+    const { rows: pos } = await client.query(
+      'SELECT * FROM simulated_positions WHERE portfolio_id = $1 AND ticker = $2 FOR UPDATE',
       [portfolio.id, ticker.toUpperCase()]
     );
-
-    if (!pos.length) return res.status(404).json({ error: 'Posição não encontrada' });
-    if (Number(quantity) > pos[0].quantity) {
-      return res.status(400).json({
-        error: 'Quantidade insuficiente',
-        available: pos[0].quantity,
-      });
+    if (!pos.length) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Posição não encontrada' }); }
+    if (qty > pos[0].quantity) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'Quantidade insuficiente', available: pos[0].quantity });
     }
 
     const price = await getCurrentPrice(ticker.toUpperCase()) || pos[0].current_price || pos[0].avg_price;
-    const total = price * Number(quantity);
+    const total = price * qty;
 
-    await pool.query(
+    await client.query(
       `INSERT INTO simulated_transactions (portfolio_id, ticker, operation, quantity, price, total)
        VALUES ($1, $2, 'sell', $3, $4, $5)`,
-      [portfolio.id, ticker.toUpperCase(), Number(quantity), price, total]
+      [portfolio.id, ticker.toUpperCase(), qty, price, total]
     );
 
-    if (Number(quantity) === pos[0].quantity) {
-      await pool.query(
+    if (qty === pos[0].quantity) {
+      await client.query(
         'DELETE FROM simulated_positions WHERE portfolio_id = $1 AND ticker = $2',
         [portfolio.id, ticker.toUpperCase()]
       );
     } else {
-      await pool.query(
+      await client.query(
         `UPDATE simulated_positions SET quantity = quantity - $1, last_updated = NOW()
          WHERE portfolio_id = $2 AND ticker = $3`,
-        [Number(quantity), portfolio.id, ticker.toUpperCase()]
+        [qty, portfolio.id, ticker.toUpperCase()]
       );
     }
 
-    await pool.query(
-      `UPDATE simulated_portfolios
-       SET current_balance = current_balance + $1, updated_at = NOW()
-       WHERE id = $2`,
+    await client.query(
+      `UPDATE simulated_portfolios SET current_balance = current_balance + $1, updated_at = NOW() WHERE id = $2`,
       [total, portfolio.id]
     );
 
-    res.json({ success: true, ticker: ticker.toUpperCase(), quantity: Number(quantity), price, total });
+    await client.query('COMMIT');
+    res.json({ success: true, ticker: ticker.toUpperCase(), quantity: qty, price, total });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    await client.query('ROLLBACK');
+    console.error('[simulated-portfolio/sell]', e.message);
+    res.status(500).json({ error: 'Erro ao processar venda' });
+  } finally {
+    client.release();
   }
 });
 
@@ -217,7 +228,8 @@ router.get('/history', async (req, res) => {
     );
     res.json(rows);
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('[simulated-portfolio/history]', e.message);
+    res.status(500).json({ error: 'Erro ao carregar histórico' });
   }
 });
 
@@ -237,15 +249,16 @@ router.get('/performance', async (req, res) => {
     const totalValue = portfolio.current_balance + positionsValue;
 
     res.json({
-      initial_balance:      portfolio.initial_balance,
-      cash_balance:         portfolio.current_balance,
-      positions_value:      positionsValue,
-      total_value:          totalValue,
-      total_return_value:   totalValue - portfolio.initial_balance,
-      total_return_pct:     ((totalValue - portfolio.initial_balance) / portfolio.initial_balance) * 100,
+      initial_balance:    portfolio.initial_balance,
+      cash_balance:       portfolio.current_balance,
+      positions_value:    positionsValue,
+      total_value:        totalValue,
+      total_return_value: totalValue - portfolio.initial_balance,
+      total_return_pct:   ((totalValue - portfolio.initial_balance) / portfolio.initial_balance) * 100,
     });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('[simulated-portfolio/performance]', e.message);
+    res.status(500).json({ error: 'Erro ao calcular performance' });
   }
 });
 
@@ -275,7 +288,8 @@ router.post('/refresh', async (req, res) => {
 
     res.json({ success: true, updated });
   } catch (e) {
-    res.status(500).json({ error: e.message });
+    console.error('[simulated-portfolio/refresh]', e.message);
+    res.status(500).json({ error: 'Erro ao atualizar preços' });
   }
 });
 
