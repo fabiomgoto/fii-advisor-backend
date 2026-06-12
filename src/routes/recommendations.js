@@ -3,6 +3,7 @@ const router  = express.Router();
 const pool    = require('../db/connection');
 const auth    = require('../middleware/auth');
 const { calcularScore } = require('../engine/fii-scorer');
+const { gerarExplicacoesRecomendacao } = require('../engine/fii-ai');
 
 router.use(auth);
 
@@ -134,16 +135,31 @@ router.post('/generate', async (req, res) => {
     const selected = eligible.slice(0, 5);
     const allocation = calculateAllocation(selected);
 
-    const fiisWithExplanation = selected.map(f => ({
+    const fiisBase = selected.map(f => ({
       ticker:    f.ticker,
-      segmento:  f.segment || null,    // campo correto lido pelo frontend
-      dy_12m:    f.dy_12m,             // frontend lê fii.dy_12m
-      p_vp:      f.pvp,                // frontend lê fii.p_vp
+      segmento:  f.segment || null,
+      dy_12m:    f.dy_12m,
+      p_vp:      f.pvp,
+      pvp:       f.pvp,
       liquidity: f.liquidity,
       price:     f.price,
-      score:     f.rec_score,          // frontend lê fii.score
+      score:     f.rec_score,
       weight:    allocation[f.ticker] || 20,
       explanation: buildExplanation(f, wizardData || {}),
+    }));
+
+    let llmExplicacoes = null;
+    try {
+      llmExplicacoes = await gerarExplicacoesRecomendacao(
+        investor_profile, investor_score, wizardData, fiisBase
+      );
+    } catch (e) {
+      console.warn('[recommendations] LLM explain falhou:', e.message);
+    }
+
+    const fiisWithExplanation = fiisBase.map(f => ({
+      ...f,
+      reason: llmExplicacoes?.[f.ticker] || f.explanation.join('. '),
     }));
 
     // Alocação por segmento
