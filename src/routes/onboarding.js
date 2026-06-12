@@ -151,8 +151,8 @@ router.post('/wizard/complete', async (req, res) => {
 
     res.json({ score, profile, blocks });
   } catch (e) {
-    console.error('[wizard/complete] erro:', e.message);
-    res.status(500).json({ error: 'Erro interno. Tente novamente.' });
+    console.error('[wizard/complete] erro:', e.message, e.stack);
+    res.status(500).json({ error: `Erro interno: ${e.message}` });
   }
 });
 
