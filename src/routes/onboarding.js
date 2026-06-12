@@ -131,15 +131,14 @@ router.post('/wizard/complete', async (req, res) => {
        SET wizard_completo  = TRUE,
            investor_score   = $1,
            investor_profile = $2,
-           perfil_tipo      = $2,
+           perfil_tipo      = $3,
            updated_at       = NOW()
-       WHERE user_id = $3
+       WHERE user_id = $4
        RETURNING user_id`,
-      [score, profile, userId]
+      [score, profile, profile, userId]
     );
 
     if (updated.rowCount === 0) {
-      // Linha não existe — cria
       await pool.query(
         `INSERT INTO user_profiles (user_id, wizard_completo, investor_score, investor_profile, perfil_tipo)
          VALUES ($1, TRUE, $2, $3, $3)
