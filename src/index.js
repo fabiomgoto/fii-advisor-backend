@@ -260,6 +260,18 @@ async function runMigrations() {
       ON profile_score_history(user_id, score_type, calculated_at DESC)
   `);
 
+  // ── Migration 010: Reset perfil dos usuários para o novo dual wizard ─────────
+  // Marca todos os perfis como pendentes no novo sistema sem apagar dados legados
+  await run('reset_dual_wizard_flags', `
+    UPDATE user_profiles
+    SET investor_wizard_done = FALSE,
+        financial_wizard_done = FALSE
+    WHERE investor_wizard_done IS TRUE
+       OR financial_wizard_done IS TRUE
+       OR investor_score_v2 IS NOT NULL
+       OR financial_score IS NOT NULL
+  `);
+
   console.log('[MIGRATIONS] concluídas');
 }
 
