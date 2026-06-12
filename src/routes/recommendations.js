@@ -4,7 +4,7 @@ const pool    = require('../db/connection');
 const auth    = require('../middleware/auth');
 const { calcularScore } = require('../engine/fii-scorer');
 const { gerarExplicacoesRecomendacao } = require('../engine/fii-ai');
-const { getRecommendationConfig } = require('../services/profileScoringService');
+const { getRecommendationConfig, normalizeSegmento } = require('../services/profileScoringService');
 
 router.use(auth);
 
@@ -140,7 +140,7 @@ router.post('/generate', async (req, res) => {
       if (matrixConfig.minDY)  eligible = eligible.filter(f => (f.dy_12m || 0) >= matrixConfig.minDY);
       if (matrixConfig.maxPVP && matrixConfig.maxPVP < 9) eligible = eligible.filter(f => (f.pvp || 99) <= matrixConfig.maxPVP);
       if (matrixConfig.segmentos && !matrixConfig.segmentos.includes('todos')) {
-        eligible = eligible.filter(f => !f.segment || matrixConfig.segmentos.includes(f.segment));
+        eligible = eligible.filter(f => !f.segment || matrixConfig.segmentos.includes(normalizeSegmento(f.segment)));
       }
     } else {
       // fallback: filtros do wizard legado

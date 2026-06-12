@@ -66,28 +66,63 @@ function classificarPerfilInvestidor(score) {
   return 'conservador';
 }
 
+// ── MAPEAMENTO DE SEGMENTOS (Fundamentus → chaves da matriz) ─────────────────
+// Fundamentus retorna nomes em PT-BR com acentos; normaliza para chaves simples.
+const SEGMENT_MAP = {
+  'Recebíveis':              'recebiveis',
+  'Recebíveis - Agro':       'recebiveis',
+  'Recebíveis Imobiliários': 'recebiveis',
+  'Logístico':               'logistico',
+  'Logístico/Industrial':    'logistico',
+  'Logístico e Industrial':  'logistico',
+  'Shopping':                'shopping',
+  'Shopping/Varejo':         'shopping',
+  'Shoppings':               'shopping',
+  'Corporativo/Escritórios': 'corporativo',
+  'Corporativo':             'corporativo',
+  'Escritórios':             'corporativo',
+  'Fundo de Fundos':         'fof',
+  'Fundo de fundos':         'fof',
+  'FoF':                     'fof',
+  'Agro e Industrial':       'agro',
+  'Agro':                    'agro',
+  'Híbrido':                 'hibrido',
+  'Residencial':             'residencial',
+  'Hospital':                'outros',
+  'Educacional':             'outros',
+  'Outros':                  'outros',
+};
+
+function normalizeSegmento(raw) {
+  if (!raw) return null;
+  return SEGMENT_MAP[raw.trim()] || raw.trim().toLowerCase()
+    .normalize('NFD').replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]/g, '');
+}
+
 // ── MATRIX DE RECOMENDAÇÃO (perfil × momento) ────────────────────────────────
+// minDY em percentual (igual ao que vem do Fundamentus: 9.5 = 9.5%)
 
 const RECOMMENDATION_MATRIX = {
   conservador: {
-    saudavel:  { segmentos: ['recebiveis', 'fof_conservador'], maxExposicao: 0.30, focoDY: true,  minDY: 0.06, maxPVP: 1.05 },
-    cauteloso: { segmentos: ['recebiveis'],                     maxExposicao: 0.20, focoDY: true,  minDY: 0.07, maxPVP: 1.00 },
-    restrito:  { segmentos: [],                                 maxExposicao: 0.00, pausar: true,  mensagem: 'Priorize reserva de emergência antes de investir em FIIs.' },
+    saudavel:  { segmentos: ['recebiveis', 'fof'], maxExposicao: 0.30, focoDY: true,  minDY: 6,  maxPVP: 1.05 },
+    cauteloso: { segmentos: ['recebiveis'],         maxExposicao: 0.20, focoDY: true,  minDY: 7,  maxPVP: 1.00 },
+    restrito:  { segmentos: [],                     maxExposicao: 0.00, pausar: true,  mensagem: 'Priorize reserva de emergência antes de investir em FIIs.' },
   },
   moderado: {
-    saudavel:  { segmentos: ['recebiveis', 'logistico', 'fof'], maxExposicao: 0.50, focoDY: false, minDY: 0.07, maxPVP: 1.10 },
-    cauteloso: { segmentos: ['recebiveis', 'logistico'],         maxExposicao: 0.35, focoDY: true,  minDY: 0.08, maxPVP: 1.00 },
+    saudavel:  { segmentos: ['recebiveis', 'logistico', 'fof'], maxExposicao: 0.50, focoDY: false, minDY: 7,  maxPVP: 1.10 },
+    cauteloso: { segmentos: ['recebiveis', 'logistico'],         maxExposicao: 0.35, focoDY: true,  minDY: 8,  maxPVP: 1.00 },
     restrito:  { segmentos: ['recebiveis'],                      maxExposicao: 0.10, pausar: false, mensagem: 'Momento financeiro delicado. Mantenha aportes mínimos apenas em FIIs de baixíssimo risco.' },
   },
   arrojado: {
-    saudavel:  { segmentos: ['logistico', 'shopping', 'corporativo', 'agro', 'recebiveis'], maxExposicao: 0.70, focoDY: false, minDY: 0.06, maxPVP: 1.20 },
-    cauteloso: { segmentos: ['recebiveis', 'logistico'],         maxExposicao: 0.40, focoDY: false, minDY: 0.07, maxPVP: 1.05 },
-    restrito:  { segmentos: ['recebiveis'],                      maxExposicao: 0.15, pausar: false, mensagem: 'Reduza novos aportes e mantenha apenas posições existentes.' },
+    saudavel:  { segmentos: ['logistico', 'shopping', 'corporativo', 'agro', 'recebiveis'], maxExposicao: 0.70, focoDY: false, minDY: 6,  maxPVP: 1.20 },
+    cauteloso: { segmentos: ['recebiveis', 'logistico'],                                    maxExposicao: 0.40, focoDY: false, minDY: 7,  maxPVP: 1.05 },
+    restrito:  { segmentos: ['recebiveis'],                                                 maxExposicao: 0.15, pausar: false, mensagem: 'Reduza novos aportes e mantenha apenas posições existentes.' },
   },
   sofisticado: {
-    saudavel:  { segmentos: ['todos'],                           maxExposicao: 0.90, focoDY: false, minDY: 0.00, maxPVP: 9.99 },
-    cauteloso: { segmentos: ['logistico', 'shopping', 'recebiveis'], maxExposicao: 0.50, focoDY: false, minDY: 0.06, maxPVP: 1.10 },
-    restrito:  { segmentos: ['recebiveis', 'logistico'],         maxExposicao: 0.25, pausar: false, mensagem: 'Momento restritivo. Mantenha carteira atual e evite novos aportes.' },
+    saudavel:  { segmentos: ['todos'],                               maxExposicao: 0.90, focoDY: false, minDY: 0,  maxPVP: 9.99 },
+    cauteloso: { segmentos: ['logistico', 'shopping', 'recebiveis'], maxExposicao: 0.50, focoDY: false, minDY: 6,  maxPVP: 1.10 },
+    restrito:  { segmentos: ['recebiveis', 'logistico'],             maxExposicao: 0.25, pausar: false, mensagem: 'Momento restritivo. Mantenha carteira atual e evite novos aportes.' },
   },
 };
 
@@ -102,4 +137,5 @@ module.exports = {
   calcularInvestorScore,
   classificarPerfilInvestidor,
   getRecommendationConfig,
+  normalizeSegmento,
 };
