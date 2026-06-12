@@ -153,6 +153,43 @@ router.put('/onboarding', async (req, res) => {
   }
 });
 
+// DELETE /api/profile/account — exclui todos os dados do usuário e a conta Supabase
+router.delete('/account', async (req, res) => {
+  const userId = getUserId(req);
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    await client.query('DELETE FROM profile_score_history     WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM portfolio_recommendations WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM dividends                 WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM contributions             WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM portfolio_fiis            WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM simulated_portfolios      WHERE user_id = $1', [userId]);
+    await client.query('DELETE FROM user_profiles             WHERE user_id = $1', [userId]);
+
+    await client.query('COMMIT');
+
+    // Deleta o usuário no Supabase Auth (requer service_role key)
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    if (serviceKey) {
+      const { createClient } = require('@supabase/supabase-js');
+      const admin = createClient(process.env.SUPABASE_URL, serviceKey, {
+        auth: { autoRefreshToken: false, persistSession: false },
+      });
+      await admin.auth.admin.deleteUser(userId);
+    }
+
+    res.json({ success: true });
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('[profile] deleteAccount:', err.message);
+    res.status(500).json({ error: 'Erro ao excluir conta: ' + err.message });
+  } finally {
+    client.release();
+  }
+});
+
 // ── Dual Score endpoints ──────────────────────────────────────────────────────
 const dualCtrl = require('../controllers/profileController');
 
