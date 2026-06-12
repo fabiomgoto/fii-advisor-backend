@@ -29,195 +29,197 @@ app.get('/api/health', healthPayload);
 
 // ── Migrations ────────────────────────────────────────────────────────────────
 async function runMigrations() {
-  try {
-    const pool = require('./db/connection');
+  const pool = require('./db/connection');
 
-    await pool.query(`
-      DO $$ BEGIN
-        IF NOT EXISTS (
-          SELECT 1 FROM pg_constraint
-          WHERE conname = 'dividends_user_ticker_exdate_unique'
-        ) THEN
-          ALTER TABLE dividends
-            ADD CONSTRAINT dividends_user_ticker_exdate_unique
-            UNIQUE (user_id, ticker, ex_date);
-        END IF;
-      END $$;
-    `);
+  // Cada migração roda independentemente — falhas não bloqueiam as demais
+  const run = async (label, sql) => {
+    try {
+      await pool.query(sql);
+    } catch (e) {
+      console.warn(`[MIGRATION:${label}]`, e.message);
+    }
+  };
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS user_profiles (
-        id                  SERIAL PRIMARY KEY,
-        user_id             TEXT NOT NULL UNIQUE,
-        nome                TEXT,
-        avatar_url          TEXT,
-        perfil_tipo         TEXT,
-        wizard_respostas    JSONB,
-        wizard_completo     BOOLEAN DEFAULT FALSE,
-        notif_varredura     BOOLEAN DEFAULT TRUE,
-        notif_score         BOOLEAN DEFAULT TRUE,
-        notif_data_com      BOOLEAN DEFAULT FALSE,
-        onboarding_completo BOOLEAN DEFAULT FALSE,
-        apresentacao_vista  BOOLEAN DEFAULT FALSE,
-        created_at          TIMESTAMPTZ DEFAULT NOW(),
-        updated_at          TIMESTAMPTZ DEFAULT NOW()
-      );
-      CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON user_profiles(user_id);
-    `);
+  await run('dividends_constraint', `
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'dividends_user_ticker_exdate_unique'
+      ) THEN
+        ALTER TABLE dividends
+          ADD CONSTRAINT dividends_user_ticker_exdate_unique
+          UNIQUE (user_id, ticker, ex_date);
+      END IF;
+    END $$;
+  `);
 
-    // Colunas de jornada (adicionadas no Sprint das jornadas)
-    await pool.query(`
-      ALTER TABLE user_profiles
-        ADD COLUMN IF NOT EXISTS apresentacao_vista  BOOLEAN DEFAULT FALSE,
-        ADD COLUMN IF NOT EXISTS journey_level       VARCHAR(20),
-        ADD COLUMN IF NOT EXISTS investor_score      INTEGER,
-        ADD COLUMN IF NOT EXISTS investor_profile    VARCHAR(20),
-        ADD COLUMN IF NOT EXISTS tour_completo       BOOLEAN DEFAULT FALSE;
-    `);
+  await run('user_profiles_create', `
+    CREATE TABLE IF NOT EXISTS user_profiles (
+      id                  SERIAL PRIMARY KEY,
+      user_id             TEXT NOT NULL UNIQUE,
+      nome                TEXT,
+      avatar_url          TEXT,
+      perfil_tipo         TEXT,
+      wizard_respostas    JSONB,
+      wizard_completo     BOOLEAN DEFAULT FALSE,
+      notif_varredura     BOOLEAN DEFAULT TRUE,
+      notif_score         BOOLEAN DEFAULT TRUE,
+      notif_data_com      BOOLEAN DEFAULT FALSE,
+      onboarding_completo BOOLEAN DEFAULT FALSE,
+      apresentacao_vista  BOOLEAN DEFAULT FALSE,
+      created_at          TIMESTAMPTZ DEFAULT NOW(),
+      updated_at          TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await run('user_profiles_idx', `CREATE INDEX IF NOT EXISTS idx_user_profiles_user_id ON user_profiles(user_id)`);
 
-    // Colunas de venda na carteira
-    await pool.query(`
-      ALTER TABLE portfolio_fiis
-        ADD COLUMN IF NOT EXISTS sold_at       DATE,
-        ADD COLUMN IF NOT EXISTS sold_price    NUMERIC(12,4),
-        ADD COLUMN IF NOT EXISTS sold_quantity NUMERIC(12,4);
-    `);
+  await run('user_profiles_journey_cols', `
+    ALTER TABLE user_profiles
+      ADD COLUMN IF NOT EXISTS apresentacao_vista  BOOLEAN DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS journey_level       VARCHAR(20),
+      ADD COLUMN IF NOT EXISTS investor_score      INTEGER,
+      ADD COLUMN IF NOT EXISTS investor_profile    VARCHAR(20),
+      ADD COLUMN IF NOT EXISTS tour_completo       BOOLEAN DEFAULT FALSE
+  `);
 
-    // Histórico de varreduras
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS fii_scan_history (
-        id             SERIAL PRIMARY KEY,
-        scanned_at     TIMESTAMPTZ DEFAULT NOW(),
-        total_scanned  INTEGER,
-        top3           JSONB,
-        filtrados      INTEGER
-      );
-    `);
+  await run('portfolio_fiis_sell_cols', `
+    ALTER TABLE portfolio_fiis
+      ADD COLUMN IF NOT EXISTS sold_at       DATE,
+      ADD COLUMN IF NOT EXISTS sold_price    NUMERIC(12,4),
+      ADD COLUMN IF NOT EXISTS sold_quantity NUMERIC(12,4)
+  `);
 
-    // Waitlist PRO
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS waitlist (
-        id         SERIAL PRIMARY KEY,
-        email      TEXT UNIQUE NOT NULL,
-        created_at TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
+  await run('fii_scan_history', `
+    CREATE TABLE IF NOT EXISTS fii_scan_history (
+      id             SERIAL PRIMARY KEY,
+      scanned_at     TIMESTAMPTZ DEFAULT NOW(),
+      total_scanned  INTEGER,
+      top3           JSONB,
+      filtrados      INTEGER
+    )
+  `);
 
-    // Carteira simulada
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS simulated_portfolios (
-        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id          TEXT NOT NULL UNIQUE,
-        initial_balance  DECIMAL(12,2) NOT NULL DEFAULT 10000.00,
-        current_balance  DECIMAL(12,2) NOT NULL DEFAULT 10000.00,
-        created_at       TIMESTAMPTZ DEFAULT NOW(),
-        updated_at       TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
+  await run('waitlist', `
+    CREATE TABLE IF NOT EXISTS waitlist (
+      id         SERIAL PRIMARY KEY,
+      email      TEXT UNIQUE NOT NULL,
+      created_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS simulated_positions (
-        id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        portfolio_id   UUID REFERENCES simulated_portfolios(id) ON DELETE CASCADE,
-        ticker         VARCHAR(10) NOT NULL,
-        quantity       INTEGER NOT NULL DEFAULT 0,
-        avg_price      DECIMAL(10,4) NOT NULL,
-        current_price  DECIMAL(10,4),
-        last_updated   TIMESTAMPTZ DEFAULT NOW(),
-        UNIQUE(portfolio_id, ticker)
-      );
-    `);
+  await run('simulated_portfolios', `
+    CREATE TABLE IF NOT EXISTS simulated_portfolios (
+      id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id          TEXT NOT NULL UNIQUE,
+      initial_balance  DECIMAL(12,2) NOT NULL DEFAULT 10000.00,
+      current_balance  DECIMAL(12,2) NOT NULL DEFAULT 10000.00,
+      created_at       TIMESTAMPTZ DEFAULT NOW(),
+      updated_at       TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
 
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS simulated_transactions (
-        id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        portfolio_id  UUID REFERENCES simulated_portfolios(id) ON DELETE CASCADE,
-        ticker        VARCHAR(10) NOT NULL,
-        operation     VARCHAR(10) NOT NULL CHECK (operation IN ('buy', 'sell', 'dividend')),
-        quantity      INTEGER,
-        price         DECIMAL(10,4),
-        total         DECIMAL(12,2) NOT NULL,
-        executed_at   TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
+  await run('simulated_positions', `
+    CREATE TABLE IF NOT EXISTS simulated_positions (
+      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      portfolio_id   UUID REFERENCES simulated_portfolios(id) ON DELETE CASCADE,
+      ticker         VARCHAR(10) NOT NULL,
+      quantity       INTEGER NOT NULL DEFAULT 0,
+      avg_price      DECIMAL(10,4) NOT NULL,
+      current_price  DECIMAL(10,4),
+      last_updated   TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(portfolio_id, ticker)
+    )
+  `);
 
-    // Recomendações de carteira
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS portfolio_recommendations (
-        id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-        user_id          TEXT NOT NULL UNIQUE,
-        generated_at     TIMESTAMPTZ DEFAULT NOW(),
-        profile_score    INTEGER,
-        investor_profile VARCHAR(20),
-        recommendation   JSONB NOT NULL,
-        accepted         BOOLEAN DEFAULT FALSE
-      );
-    `);
+  await run('simulated_transactions', `
+    CREATE TABLE IF NOT EXISTS simulated_transactions (
+      id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      portfolio_id  UUID REFERENCES simulated_portfolios(id) ON DELETE CASCADE,
+      ticker        VARCHAR(10) NOT NULL,
+      operation     VARCHAR(10) NOT NULL CHECK (operation IN ('buy', 'sell', 'dividend')),
+      quantity      INTEGER,
+      price         DECIMAL(10,4),
+      total         DECIMAL(12,2) NOT NULL,
+      executed_at   TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
 
-    // Mercado de FIIs (populada pelo fii-scanner diário)
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS fiis_market (
-        ticker     VARCHAR(10) PRIMARY KEY,
-        name       TEXT,
-        price      DECIMAL(10,4),
-        dy_12m     DECIMAL(8,4),
-        pvp        DECIMAL(8,4),
-        liquidity  DECIMAL(16,2),
-        net_worth  DECIMAL(16,2),
-        score      INTEGER,
-        action     TEXT,
-        scanned_at TIMESTAMPTZ DEFAULT NOW()
-      );
-      ALTER TABLE fiis_market ADD COLUMN IF NOT EXISTS segment TEXT;
-      ALTER TABLE fiis_market ADD COLUMN IF NOT EXISTS vacancy  DECIMAL(8,4);
-      ALTER TABLE fiis_market ADD COLUMN IF NOT EXISTS properties INTEGER;
-    `);
+  await run('portfolio_recommendations', `
+    CREATE TABLE IF NOT EXISTS portfolio_recommendations (
+      id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id          TEXT NOT NULL UNIQUE,
+      generated_at     TIMESTAMPTZ DEFAULT NOW(),
+      profile_score    INTEGER,
+      investor_profile VARCHAR(20),
+      recommendation   JSONB NOT NULL,
+      accepted         BOOLEAN DEFAULT FALSE
+    )
+  `);
 
-    // Síntese IA do top 10
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS top10_synthesis (
-        id           SERIAL PRIMARY KEY,
-        generated_at TIMESTAMPTZ DEFAULT NOW(),
-        synthesis    TEXT,
-        top_tickers  JSONB
-      );
-    `);
+  await run('fiis_market', `
+    CREATE TABLE IF NOT EXISTS fiis_market (
+      ticker     VARCHAR(10) PRIMARY KEY,
+      name       TEXT,
+      price      DECIMAL(10,4),
+      dy_12m     DECIMAL(8,4),
+      pvp        DECIMAL(8,4),
+      liquidity  DECIMAL(16,2),
+      net_worth  DECIMAL(16,2),
+      score      INTEGER,
+      action     TEXT,
+      scanned_at TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await run('fiis_market_cols', `
+    ALTER TABLE fiis_market
+      ADD COLUMN IF NOT EXISTS segment    TEXT,
+      ADD COLUMN IF NOT EXISTS vacancy    DECIMAL(8,4),
+      ADD COLUMN IF NOT EXISTS properties INTEGER
+  `);
 
-    // Cache de dados de FIIs para recomendações (legado)
-    await pool.query(`
-      CREATE TABLE IF NOT EXISTS fii_dados (
-        ticker       VARCHAR(10) PRIMARY KEY,
-        name         TEXT,
-        segment      TEXT,
-        price        DECIMAL(10,4),
-        dy_12m       DECIMAL(8,4),
-        pvp          DECIMAL(8,4),
-        vacancy      DECIMAL(8,4),
-        liquidity    DECIMAL(16,2),
-        leverage     DECIMAL(8,4),
-        properties   INTEGER,
-        div_growth   DECIMAL(8,4),
-        wault        DECIMAL(8,4),
-        ultimo_dy_valor DECIMAL(10,6),
-        score        INTEGER,
-        updated_at   TIMESTAMPTZ DEFAULT NOW()
-      );
-    `);
+  await run('top10_synthesis', `
+    CREATE TABLE IF NOT EXISTS top10_synthesis (
+      id           SERIAL PRIMARY KEY,
+      generated_at TIMESTAMPTZ DEFAULT NOW(),
+      synthesis    TEXT,
+      top_tickers  JSONB
+    )
+  `);
 
-    // Índices para performance de queries frequentes
-    await pool.query(`
-      CREATE INDEX IF NOT EXISTS idx_sim_positions_portfolio
-        ON simulated_positions(portfolio_id);
-      CREATE INDEX IF NOT EXISTS idx_sim_transactions_portfolio_date
-        ON simulated_transactions(portfolio_id, executed_at DESC);
-      CREATE INDEX IF NOT EXISTS idx_portfolio_recommendations_user
-        ON portfolio_recommendations(user_id);
-    `);
+  await run('fii_dados', `
+    CREATE TABLE IF NOT EXISTS fii_dados (
+      ticker          VARCHAR(10) PRIMARY KEY,
+      name            TEXT,
+      segment         TEXT,
+      price           DECIMAL(10,4),
+      dy_12m          DECIMAL(8,4),
+      pvp             DECIMAL(8,4),
+      vacancy         DECIMAL(8,4),
+      liquidity       DECIMAL(16,2),
+      leverage        DECIMAL(8,4),
+      properties      INTEGER,
+      div_growth      DECIMAL(8,4),
+      wault           DECIMAL(8,4),
+      ultimo_dy_valor DECIMAL(10,6),
+      score           INTEGER,
+      updated_at      TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
 
-    console.log('[MIGRATIONS] OK');
-  } catch (e) {
-    console.warn('[MIGRATIONS]', e.message);
-  }
+  await run('sim_indexes', `
+    CREATE INDEX IF NOT EXISTS idx_sim_positions_portfolio
+      ON simulated_positions(portfolio_id)
+  `);
+  await run('sim_tx_index', `
+    CREATE INDEX IF NOT EXISTS idx_sim_transactions_portfolio_date
+      ON simulated_transactions(portfolio_id, executed_at DESC)
+  `);
+  await run('rec_index', `
+    CREATE INDEX IF NOT EXISTS idx_portfolio_recommendations_user
+      ON portfolio_recommendations(user_id)
+  `);
+
+  console.log('[MIGRATIONS] concluídas');
 }
 
 // ── Scheduler ─────────────────────────────────────────────────────────────────
