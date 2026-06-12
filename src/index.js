@@ -219,6 +219,47 @@ async function runMigrations() {
       ON portfolio_recommendations(user_id)
   `);
 
+  // ── Migration 009: Dual Score Profile System ──────────────────────────────
+  await run('dual_score_cols', `
+    ALTER TABLE user_profiles
+      ADD COLUMN IF NOT EXISTS financial_score       INTEGER CHECK (financial_score BETWEEN 0 AND 100),
+      ADD COLUMN IF NOT EXISTS financial_moment      VARCHAR(20) CHECK (financial_moment IN ('saudavel', 'cauteloso', 'restrito')),
+      ADD COLUMN IF NOT EXISTS financial_wizard_data JSONB,
+      ADD COLUMN IF NOT EXISTS financial_updated_at  TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS financial_wizard_done BOOLEAN DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS investor_score_v2     INTEGER CHECK (investor_score_v2 BETWEEN 0 AND 100),
+      ADD COLUMN IF NOT EXISTS investor_profile_v2   VARCHAR(20) CHECK (investor_profile_v2 IN ('conservador','moderado','arrojado','sofisticado')),
+      ADD COLUMN IF NOT EXISTS investor_wizard_data  JSONB,
+      ADD COLUMN IF NOT EXISTS investor_updated_at   TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS investor_wizard_done  BOOLEAN DEFAULT FALSE
+  `);
+
+  await run('dual_score_migrate_existing', `
+    UPDATE user_profiles
+    SET investor_score_v2    = investor_score,
+        investor_profile_v2  = investor_profile,
+        investor_wizard_done = wizard_completo,
+        investor_updated_at  = updated_at
+    WHERE investor_score IS NOT NULL
+      AND investor_score_v2 IS NULL
+  `);
+
+  await run('profile_score_history', `
+    CREATE TABLE IF NOT EXISTS profile_score_history (
+      id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id        TEXT NOT NULL,
+      score_type     VARCHAR(20) NOT NULL CHECK (score_type IN ('financial', 'investor')),
+      score          INTEGER NOT NULL,
+      profile_result VARCHAR(20) NOT NULL,
+      wizard_data    JSONB,
+      calculated_at  TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await run('idx_score_history', `
+    CREATE INDEX IF NOT EXISTS idx_score_history_user
+      ON profile_score_history(user_id, score_type, calculated_at DESC)
+  `);
+
   console.log('[MIGRATIONS] concluídas');
 }
 

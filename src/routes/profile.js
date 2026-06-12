@@ -153,4 +153,12 @@ router.put('/onboarding', async (req, res) => {
   }
 });
 
+// ── Dual Score endpoints ──────────────────────────────────────────────────────
+const dualCtrl = require('../controllers/profileController');
+
+router.post('/financial-score', dualCtrl.saveFinancialScore);
+router.post('/investor-score',  dualCtrl.saveInvestorScore);
+router.get('/dual-score',       dualCtrl.getDualScore);
+router.get('/score-history',    dualCtrl.getScoreHistory);
+
 module.exports = router;
