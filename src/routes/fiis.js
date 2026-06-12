@@ -107,7 +107,7 @@ router.get('/portfolio', async (req, res) => {
   try {
     const userId = getUserId(req);
     const { rows: fiis } = await pool.query(
-      'SELECT * FROM portfolio_fiis WHERE user_id = $1 ORDER BY sold_at NULLS FIRST, created_at',
+      'SELECT * FROM portfolio_fiis WHERE user_id = $1 ORDER BY created_at ASC',
       [userId]
     );
     const tickers = fiis.map(f => f.ticker);
