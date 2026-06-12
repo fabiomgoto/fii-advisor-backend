@@ -23,44 +23,66 @@ function getUserId(req) {
 }
 
 async function fetchPrecos(tickers) {
-  const agora = Date.now();
+  const agora   = Date.now();
   const precisam = tickers.filter(t => !PRICE_CACHE[t] || agora - PRICE_CACHE[t].ts > CACHE_TTL_MS);
 
   if (precisam.length > 0) {
     await Promise.all(precisam.map(async (ticker) => {
-      try {
-        // 1ª opção: Fundamentus (price + DY + PVP, cache 1h)
-        const fund = await buscarFundamentus(ticker);
-        if (fund?.price) {
-          PRICE_CACHE[ticker] = { ...fund, ts: agora };
-          return;
-        }
-      } catch (_) {}
+      let dado = null;
 
       try {
-        // 2ª opção: mfinance (price + DY + segment)
-        const { data } = await axios.get(
-          `https://mfinance.com.br/api/v1/fiis/${ticker}`,
-          { timeout: 8000 }
-        );
-        PRICE_CACHE[ticker] = {
-          price:   data.lastPrice ?? data.closingPrice ?? null,
-          dy_12m:  data.dividendYield ?? null,
-          segment: data.segment ?? null,
-          ts: agora,
-        };
-      } catch (_) {
+        // 1ª opção: Fundamentus (price + DY + PVP)
+        const fund = await buscarFundamentus(ticker);
+        if (fund?.price) dado = { ...fund };
+      } catch (_) {}
+
+      if (!dado) {
         try {
-          // 3ª opção: brapi (só price)
+          // 2ª opção: mfinance (price + DY + segment)
+          const { data } = await axios.get(
+            `https://mfinance.com.br/api/v1/fiis/${ticker}`,
+            { timeout: 8000 }
+          );
+          dado = {
+            price:   data.lastPrice ?? data.closingPrice ?? null,
+            dy_12m:  data.dividendYield ?? null,
+            segment: data.segment ?? null,
+          };
+        } catch (_) {}
+      }
+
+      if (!dado) {
+        try {
+          // 3ª opção: brapi (price + dy + pvp)
           const { data } = await axios.get(
             `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}`,
             { timeout: 8000 }
           );
           const q = data?.results?.[0];
-          if (q) PRICE_CACHE[ticker] = { price: q.regularMarketPrice ?? null, ts: agora };
+          if (q) dado = {
+            price:  q.regularMarketPrice ?? null,
+            dy_12m: q.dividendYield      ?? null,
+            pvp:    q.priceToBook        ?? null,
+          };
         } catch (e) {
           console.warn(`[fiis/prices] erro ${ticker}:`, e.message);
         }
+      }
+
+      if (dado?.price) {
+        PRICE_CACHE[ticker] = { ...dado, ts: agora };
+        // Persiste preço no fiis_market para não perder entre restarts
+        pool.query(
+          `INSERT INTO fiis_market (ticker, price, dy_12m, pvp, segment, scanned_at)
+           VALUES ($1,$2,$3,$4,$5,NOW())
+           ON CONFLICT (ticker) DO UPDATE SET
+             price=COALESCE(EXCLUDED.price, fiis_market.price),
+             dy_12m=COALESCE(EXCLUDED.dy_12m, fiis_market.dy_12m),
+             pvp=COALESCE(EXCLUDED.pvp, fiis_market.pvp),
+             segment=COALESCE(EXCLUDED.segment, fiis_market.segment),
+             scanned_at=NOW()`,
+          [ticker, dado.price, dado.dy_12m ?? null, dado.pvp ?? null, dado.segment ?? null]
+        ).catch(e => console.warn(`[fiis/prices] upsert ${ticker}:`, e.message));
       }
     }));
   }
@@ -75,6 +97,19 @@ router.get('/market', async (req, res) => {
       'SELECT * FROM fiis_market ORDER BY score DESC NULLS LAST'
     );
     res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/fiis/market/scan — força varredura manual (atualiza fiis_market agora)
+router.post('/market/scan', async (req, res) => {
+  try {
+    const { rodarFIIScanner } = require('../scheduler/fii-scanner');
+    rodarFIIScanner()
+      .then(n => console.log(`[scan-manual] ${n} FIIs processados`))
+      .catch(e => console.warn('[scan-manual] erro:', e.message));
+    res.json({ ok: true, msg: 'Varredura iniciada em background' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -210,6 +245,9 @@ router.post('/portfolio', async (req, res) => {
       [ticker.toUpperCase(), name, segment, userId]
     );
     res.status(201).json(rows[0]);
+
+    // Busca dados do novo ticker em background para popular fiis_market imediatamente
+    fetchPrecos([ticker.toUpperCase()]).catch(() => {});
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

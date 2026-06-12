@@ -168,6 +168,9 @@ async function runMigrations() {
         action     TEXT,
         scanned_at TIMESTAMPTZ DEFAULT NOW()
       );
+      ALTER TABLE fiis_market ADD COLUMN IF NOT EXISTS segment TEXT;
+      ALTER TABLE fiis_market ADD COLUMN IF NOT EXISTS vacancy  DECIMAL(8,4);
+      ALTER TABLE fiis_market ADD COLUMN IF NOT EXISTS properties INTEGER;
     `);
 
     // Síntese IA do top 10
@@ -269,14 +272,12 @@ function iniciarScheduler() {
     }
   }, { timezone: 'America/Sao_Paulo' });
 
-  // Executar varredura imediatamente no startup para popular fiis_market
+  // Varredura no startup — sempre, para popular/atualizar fiis_market
   setImmediate(async () => {
     try {
-      const { rows } = await pool.query('SELECT COUNT(*) FROM fiis_market');
-      if (parseInt(rows[0].count) === 0) {
-        console.log('[STARTUP] fiis_market vazia — rodando varredura inicial...');
-        await rodarFIIScanner();
-      }
+      console.log('[STARTUP] Rodando varredura inicial de FIIs...');
+      await rodarFIIScanner();
+      console.log('[STARTUP] Varredura inicial concluída.');
     } catch (err) {
       console.warn('[STARTUP] Varredura inicial falhou:', err.message);
     }
