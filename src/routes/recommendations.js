@@ -4,6 +4,7 @@ const pool    = require('../db/connection');
 const auth    = require('../middleware/auth');
 const { calcularScore } = require('../engine/fii-scorer');
 const { gerarExplicacoesRecomendacao } = require('../engine/fii-ai');
+const { getRecommendationConfig } = require('../services/profileScoringService');
 
 router.use(auth);
 
@@ -90,22 +91,30 @@ router.post('/generate', async (req, res) => {
   const userId = req.userId;
   try {
     const profileRes = await pool.query(
-      'SELECT investor_score, investor_profile, wizard_respostas FROM user_profiles WHERE user_id = $1',
+      `SELECT investor_score, investor_profile, wizard_respostas,
+              investor_score_v2, investor_profile_v2, financial_score, financial_moment
+       FROM user_profiles WHERE user_id = $1`,
       [userId]
     );
     const row = profileRes.rows[0];
-    if (!row?.investor_profile) {
+    // Usa v2 se disponível, fallback para campos legados
+    const investor_profile = row?.investor_profile_v2 || row?.investor_profile;
+    const investor_score   = row?.investor_score_v2   || row?.investor_score;
+    const financial_moment = row?.financial_moment;
+    const wizardData       = row?.wizard_respostas;
+
+    if (!investor_profile) {
       return res.status(400).json({ error: 'Wizard não concluído. Complete seu perfil primeiro.' });
     }
 
-    const { investor_score, investor_profile, wizard_respostas: wizardData } = row;
-    const restrictions = wizardData?.step10 || {};
-    const preferences  = wizardData?.step9  || {};
-    const incomeNeed   = wizardData?.step8?.needs_income_now || false;
+    // Obtém config da matriz de recomendação (perfil × momento financeiro)
+    const matrixConfig = financial_moment
+      ? getRecommendationConfig(investor_profile, financial_moment)
+      : null;
 
     // Buscar top FIIs com score — usa fiis_market (populada pelo fii-scanner diário)
     const fiisRes = await pool.query(
-      `SELECT ticker, name, dy_12m, pvp, liquidity, net_worth, price, score, action
+      `SELECT ticker, name, dy_12m, pvp, liquidity, net_worth, price, score, action, segment
        FROM fiis_market
        WHERE score IS NOT NULL
        ORDER BY score DESC
@@ -118,13 +127,31 @@ router.post('/generate', async (req, res) => {
       return res.status(503).json({ error: 'Base de FIIs ainda não disponível. Tente novamente em alguns minutos.' });
     }
 
-    // Aplicar restrições do wizard (campos disponíveis em fiis_market)
-    if (restrictions.min_dy)  eligible = eligible.filter(f => (f.dy_12m || 0) >= restrictions.min_dy);
-    if (restrictions.max_pvp) eligible = eligible.filter(f => (f.pvp || 99) <= restrictions.max_pvp);
-    if (restrictions.min_liquidity) eligible = eligible.filter(f => (f.liquidity || 0) >= restrictions.min_liquidity);
+    // Se o momento financeiro é restrito e matrixConfig diz pausar
+    if (matrixConfig?.pausar) {
+      return res.json({
+        recommendation: { fiis: [], profile: investor_profile, financial_moment, paused: true, message: matrixConfig.mensagem },
+        message: matrixConfig.mensagem,
+      });
+    }
 
-    // Priorizar renda se necessário
-    if (incomeNeed || investor_profile === 'conservador') {
+    // Aplicar filtros da matriz dual score
+    if (matrixConfig) {
+      if (matrixConfig.minDY)  eligible = eligible.filter(f => (f.dy_12m || 0) >= matrixConfig.minDY);
+      if (matrixConfig.maxPVP && matrixConfig.maxPVP < 9) eligible = eligible.filter(f => (f.pvp || 99) <= matrixConfig.maxPVP);
+      if (matrixConfig.segmentos && !matrixConfig.segmentos.includes('todos')) {
+        eligible = eligible.filter(f => !f.segment || matrixConfig.segmentos.includes(f.segment));
+      }
+    } else {
+      // fallback: filtros do wizard legado
+      const restrictions = wizardData?.step10 || {};
+      if (restrictions.min_dy)  eligible = eligible.filter(f => (f.dy_12m || 0) >= restrictions.min_dy);
+      if (restrictions.max_pvp) eligible = eligible.filter(f => (f.pvp || 99) <= restrictions.max_pvp);
+      if (restrictions.min_liquidity) eligible = eligible.filter(f => (f.liquidity || 0) >= restrictions.min_liquidity);
+    }
+
+    // Priorizar renda se focoDY ou perfil conservador
+    if (matrixConfig?.focoDY || investor_profile === 'conservador') {
       eligible.sort((a, b) => (b.dy_12m || 0) - (a.dy_12m || 0));
     }
 
@@ -171,6 +198,7 @@ router.post('/generate', async (req, res) => {
 
     const recommendation = {
       profile:            investor_profile,
+      financial_moment:   financial_moment || null,
       fiis:               fiisWithExplanation,
       segment_allocation: segAlloc,
     };
