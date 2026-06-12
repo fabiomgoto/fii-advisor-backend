@@ -75,6 +75,14 @@ async function runMigrations() {
         ADD COLUMN IF NOT EXISTS tour_completo       BOOLEAN DEFAULT FALSE;
     `);
 
+    // Colunas de venda na carteira
+    await pool.query(`
+      ALTER TABLE portfolio_fiis
+        ADD COLUMN IF NOT EXISTS sold_at       DATE,
+        ADD COLUMN IF NOT EXISTS sold_price    NUMERIC(12,4),
+        ADD COLUMN IF NOT EXISTS sold_quantity NUMERIC(12,4);
+    `);
+
     // Histórico de varreduras
     await pool.query(`
       CREATE TABLE IF NOT EXISTS fii_scan_history (

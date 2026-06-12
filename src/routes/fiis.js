@@ -107,7 +107,7 @@ router.get('/portfolio', async (req, res) => {
   try {
     const userId = getUserId(req);
     const { rows: fiis } = await pool.query(
-      'SELECT * FROM portfolio_fiis WHERE user_id = $1 ORDER BY created_at',
+      'SELECT * FROM portfolio_fiis WHERE user_id = $1 ORDER BY sold_at NULLS FIRST, created_at',
       [userId]
     );
     const tickers = fiis.map(f => f.ticker);
@@ -210,6 +210,41 @@ router.post('/portfolio', async (req, res) => {
       [ticker.toUpperCase(), name, segment, userId]
     );
     res.status(201).json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/fiis/portfolio/:ticker/sell — declarar venda (mantém histórico de proventos)
+router.post('/portfolio/:ticker/sell', async (req, res) => {
+  const userId = getUserId(req);
+  const ticker = req.params.ticker.toUpperCase();
+  const { sold_at, sold_price, sold_quantity } = req.body;
+  if (!sold_at || !sold_price) return res.status(400).json({ error: 'sold_at e sold_price são obrigatórios' });
+  try {
+    const { rows } = await pool.query(
+      `UPDATE portfolio_fiis SET sold_at = $1, sold_price = $2, sold_quantity = $3
+       WHERE ticker = $4 AND user_id = $5 RETURNING *`,
+      [sold_at, sold_price, sold_quantity || null, ticker, userId]
+    );
+    if (!rows.length) return res.status(404).json({ error: 'FII não encontrado na carteira' });
+    res.json(rows[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// DELETE /api/fiis/portfolio/:ticker/sell — desfazer venda declarada
+router.delete('/portfolio/:ticker/sell', async (req, res) => {
+  const userId = getUserId(req);
+  const ticker = req.params.ticker.toUpperCase();
+  try {
+    await pool.query(
+      `UPDATE portfolio_fiis SET sold_at = NULL, sold_price = NULL, sold_quantity = NULL
+       WHERE ticker = $1 AND user_id = $2`,
+      [ticker, userId]
+    );
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
