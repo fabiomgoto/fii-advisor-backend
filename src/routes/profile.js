@@ -248,8 +248,7 @@ router.get('/analytics', async (req, res) => {
 
       pool.query(`
         SELECT COUNT(*) AS total_fiis,
-               COUNT(DISTINCT ticker) AS unique_tickers,
-               SUM(CASE WHEN quantity > 0 THEN 1 ELSE 0 END) AS posicoes_ativas
+               COUNT(DISTINCT ticker) AS unique_tickers
         FROM portfolio_fiis WHERE user_id = $1
       `, [userId]),
     ]);
