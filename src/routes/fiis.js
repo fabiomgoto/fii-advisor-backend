@@ -4,7 +4,8 @@ const axios = require('axios');
 const pool = require('../db/connection');
 const { calcularScore, calcularScorePerfil, getAction } = require('../engine/fii-scorer');
 const { buscarFII: buscarFundamentus, buscarTodosFIIs } = require('../collectors/fundamentus');
-const { gerarSintese } = require('../engine/fii-ai');
+const { gerarSintese, gerarSintesePersonalizada } = require('../engine/fii-ai');
+const { getRecommendationConfig, normalizeSegmento } = require('../services/profileScoringService');
 const { enrichFII }   = require('../engine/fii-enricher');
 const { sincronizarProventos } = require('../scheduler/fii-proventos-sync');
 const authMiddleware = require('../middleware/auth');
@@ -846,6 +847,10 @@ router.post('/dividends/import-brapi', async (req, res) => {
 let top10Cache = null;
 const TOP10_TTL_MS = 60 * 60 * 1000; // 1h
 
+// Cache de síntese personalizada por célula de perfil × momento (12 combinações)
+const profileSinteseCache = {}; // key: "conservador_saudavel" → { sintese, top, ts }
+const PROFILE_SINTESE_TTL = 60 * 60 * 1000; // 1h
+
 // Blacklist permanente — FIIs com problemas jurídicos ou em recuperação judicial
 const BLACKLIST = ['XPIN11', 'FIGS11', 'RBVO11', 'NVHO11'];
 
@@ -1006,6 +1011,93 @@ async function rodarVarredura() {
 }
 
 // GET /api/fiis/top10 — retorna top 10 do cache ou roda varredura
+// ── GET /api/fiis/market-for-profile ──────────────────────────────────────────
+// Retorna top FIIs + síntese personalizados para o perfil dual do usuário autenticado.
+// Cache por célula (perfil × momento), TTL 1h — independente do cache global.
+router.get('/market-for-profile', authMiddleware, async (req, res) => {
+  try {
+    // 1. Ler perfil dual do usuário
+    const userId = req.userId;
+    const { rows } = await pool.query(
+      `SELECT investor_profile_v2, financial_moment
+       FROM user_profiles WHERE user_id = $1`,
+      [userId]
+    );
+    const perfil  = rows[0]?.investor_profile_v2 || null;
+    const momento = rows[0]?.financial_moment    || null;
+
+    // Se não tem perfil completo, devolve top50 genérico sem personalização
+    if (!perfil || !momento) {
+      const top50 = top10Cache?.data?.top50 || [];
+      return res.json({ top: top50.slice(0, 20), sintese: null, perfil: null, momento: null, personalizado: false });
+    }
+
+    const cacheKey = `${perfil}_${momento}`;
+
+    // 2. Cache hit
+    if (profileSinteseCache[cacheKey] && Date.now() - profileSinteseCache[cacheKey].ts < PROFILE_SINTESE_TTL) {
+      return res.json({ ...profileSinteseCache[cacheKey].data, from_cache: true });
+    }
+
+    // 3. Garantir que o top50 global existe
+    if (!top10Cache?.data?.top50?.length) {
+      // Roda varredura se não houver cache global ainda
+      await rodarVarredura();
+    }
+    const top50 = top10Cache?.data?.top50 || [];
+
+    if (!top50.length) {
+      return res.status(503).json({ error: 'Base de FIIs ainda não disponível. Tente novamente em alguns minutos.' });
+    }
+
+    // 4. Aplicar filtros da matriz perfil × momento
+    const matrix = getRecommendationConfig(perfil, momento);
+
+    let eligible = [...top50];
+
+    if (matrix.pausar) {
+      // Momento restritivo — não filtra FIIs, mas avisa para não aportar
+      const sintese = await gerarSintesePersonalizada(perfil, momento, [], {}).catch(() => null)
+        || 'Seu momento financeiro atual recomenda pausar novos aportes em FIIs. Priorize a reserva de emergência e a quitação de dívidas.';
+      const payload = { top: eligible.slice(0, 20), sintese, perfil, momento, personalizado: true, pausar: true, mensagem: matrix.mensagem };
+      profileSinteseCache[cacheKey] = { data: payload, ts: Date.now() };
+      return res.json(payload);
+    }
+
+    // Filtro de segmento
+    if (matrix.segmentos?.length && !matrix.segmentos.includes('todos')) {
+      eligible = eligible.filter(f => {
+        const seg = normalizeSegmento(f.segment);
+        return !seg || matrix.segmentos.includes(seg);
+      });
+    }
+    // Filtro de DY mínimo
+    if (matrix.minDY) eligible = eligible.filter(f => (f.dy_12m || 0) >= matrix.minDY);
+    // Filtro de P/VP máximo
+    if (matrix.maxPVP && matrix.maxPVP < 9) eligible = eligible.filter(f => (f.pvp || 99) <= matrix.maxPVP);
+
+    // 5. Ordenação: focoDY → por DY; caso contrário por score geral
+    if (matrix.focoDY) {
+      eligible.sort((a, b) => (b.dy_12m || 0) - (a.dy_12m || 0));
+    }
+    // (já ordenado por score do top50 para o caso !focoDY)
+
+    // Garante pelo menos alguns FIIs mesmo se filtros forem muito restritivos
+    const top = eligible.length >= 5 ? eligible.slice(0, 20) : top50.slice(0, 20);
+
+    // 6. Síntese personalizada
+    const sintese = await gerarSintesePersonalizada(perfil, momento, top.slice(0, 10), {}).catch(() => null);
+
+    const payload = { top, sintese, perfil, momento, personalizado: true, pausar: false, matrix };
+    profileSinteseCache[cacheKey] = { data: payload, ts: Date.now() };
+
+    res.json(payload);
+  } catch (err) {
+    console.error('[market-for-profile]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/top10', async (req, res) => {
   try {
     // Tenta cache em memória

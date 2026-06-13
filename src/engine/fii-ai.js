@@ -94,4 +94,61 @@ Seja direto: "Os melhores FIIs para aportar agora são X, Y e Z porque..."`,
   return data.content[0].text;
 }
 
-module.exports = { gerarSintese, gerarExplicacoesRecomendacao };
+// ── Síntese personalizada por perfil × momento ───────────────────────────────
+
+const PERFIL_MOMENTO_CTX = {
+  conservador_saudavel:  'investidor conservador com finanças sólidas (reserva formada, renda disponível). Prioriza estabilidade e previsibilidade de renda. Exposição máxima sugerida: 30% do patrimônio.',
+  conservador_cauteloso: 'investidor conservador em momento financeiro de atenção (algumas dívidas ou reserva incompleta). Aportes pequenos, apenas em ativos de menor risco.',
+  conservador_restrito:  'investidor conservador com momento financeiro restritivo. NÃO recomende novos aportes em FIIs — oriente a priorizar reserva de emergência e quitação de dívidas.',
+  moderado_saudavel:     'investidor moderado com finanças equilibradas. Busca equilíbrio entre renda passiva e crescimento de cota. Pode alocar até 50% do patrimônio.',
+  moderado_cauteloso:    'investidor moderado em momento de cautela financeira. Aportes reduzidos, foco em segurança. Exposição máxima: 35%.',
+  moderado_restrito:     'investidor moderado com momento financeiro restritivo. Aportes mínimos apenas em recebíveis de baixíssimo risco. Exposição máxima: 10%.',
+  arrojado_saudavel:     'investidor arrojado com excelente momento financeiro. Tolera volatilidade, horizonte longo, busca valorização de cota além do DY. Pode alocar até 70%.',
+  arrojado_cauteloso:    'investidor arrojado mas em momento financeiro de cautela. Reduz risco de segmento temporariamente. Exposição máxima: 40%.',
+  arrojado_restrito:     'investidor arrojado com momento financeiro restritivo. Manter posições existentes, sem novos aportes relevantes.',
+  sofisticado_saudavel:  'investidor sofisticado com finanças muito sólidas. Alta tolerância a risco, horizonte muito longo, pode explorar qualquer segmento. Exposição até 90%.',
+  sofisticado_cauteloso: 'investidor sofisticado em momento de cautela. Foco em fundos geradores de caixa sólidos. Exposição máxima: 50%.',
+  sofisticado_restrito:  'investidor sofisticado com momento restritivo. Gestão defensiva do portfólio existente, evitar novos aportes.',
+};
+
+async function gerarSintesePersonalizada(perfil, momento, fiis, macroCtx = {}) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return null;
+
+  const chave = `${perfil}_${momento}`;
+  const ctx   = PERFIL_MOMENTO_CTX[chave] || PERFIL_MOMENTO_CTX.moderado_saudavel;
+  const selic   = macroCtx.selic   ?? 'N/D';
+  const ifix30d = macroCtx.ifix_30d ?? 'N/D';
+
+  const pausar = momento === 'restrito' && perfil === 'conservador';
+
+  if (pausar) {
+    return 'Seu momento financeiro atual recomenda pausar novos aportes em FIIs. Priorize a reserva de emergência e a quitação de dívidas com juros acima de 12% ao ano. Quando estiver em momento saudável, os FIIs de recebíveis são a porta de entrada ideal para seu perfil.';
+  }
+
+  const fiisList = fiis.slice(0, 10).map(f =>
+    `${f.ticker}(DY=${f.dy_12m?.toFixed(1) ?? 'N/D'}% PVP=${f.pvp?.toFixed(2) ?? 'N/D'} Score=${f.score ?? 'N/D'})`
+  ).join(', ');
+
+  const prompt = `Você é analista sênior de FIIs brasileiros. Responda em português, texto corrido, sem markdown.
+
+Perfil do investidor: ${ctx}
+Cenário macro: Selic ${selic}% | IFIX 30d: ${ifix30d}%
+FIIs elegíveis para este perfil (já filtrados por segmento e critérios de risco): ${fiisList}
+
+Gere uma síntese de 3 a 5 frases orientando onde aportar este mês. Mencione 2-3 tickers específicos com justificativa breve. Inclua a exposição máxima recomendada para o perfil. Seja direto e prático.`;
+
+  try {
+    const { data } = await axios.post(
+      'https://api.anthropic.com/v1/messages',
+      { model: MODEL, max_tokens: 350, messages: [{ role: 'user', content: prompt }] },
+      { headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, timeout: 30000 }
+    );
+    return data.content[0].text;
+  } catch (e) {
+    console.warn('[fii-ai] gerarSintesePersonalizada falhou:', e.message);
+    return null;
+  }
+}
+
+module.exports = { gerarSintese, gerarExplicacoesRecomendacao, gerarSintesePersonalizada };
