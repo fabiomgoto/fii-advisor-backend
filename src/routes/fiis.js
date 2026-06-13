@@ -30,15 +30,31 @@ async function fetchPrecos(tickers) {
     await Promise.all(precisam.map(async (ticker) => {
       let dado = null;
 
+      // 1ª opção: brapi — preço intraday sempre atualizado
       try {
-        // 1ª opção: Fundamentus (price + DY + PVP)
-        const fund = await buscarFundamentus(ticker);
-        if (fund?.price) dado = { ...fund };
+        const { data } = await axios.get(
+          `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}`,
+          { timeout: 8000 }
+        );
+        const q = data?.results?.[0];
+        if (q?.regularMarketPrice) dado = {
+          price:  q.regularMarketPrice ?? null,
+          dy_12m: q.dividendYield      ?? null,
+          pvp:    q.priceToBook        ?? null,
+        };
       } catch (_) {}
+
+      // 2ª opção: Fundamentus (price + DY + PVP — pode ser cacheado até 6h)
+      if (!dado) {
+        try {
+          const fund = await buscarFundamentus(ticker);
+          if (fund?.price) dado = { ...fund };
+        } catch (_) {}
+      }
 
       if (!dado) {
         try {
-          // 2ª opção: mfinance (price + DY + segment)
+          // 3ª opção: mfinance
           const { data } = await axios.get(
             `https://mfinance.com.br/api/v1/fiis/${ticker}`,
             { timeout: 8000 }
@@ -49,24 +65,6 @@ async function fetchPrecos(tickers) {
             segment: data.segment ?? null,
           };
         } catch (_) {}
-      }
-
-      if (!dado) {
-        try {
-          // 3ª opção: brapi (price + dy + pvp)
-          const { data } = await axios.get(
-            `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}`,
-            { timeout: 8000 }
-          );
-          const q = data?.results?.[0];
-          if (q) dado = {
-            price:  q.regularMarketPrice ?? null,
-            dy_12m: q.dividendYield      ?? null,
-            pvp:    q.priceToBook        ?? null,
-          };
-        } catch (e) {
-          console.warn(`[fiis/prices] erro ${ticker}:`, e.message);
-        }
       }
 
       if (dado?.price) {
@@ -1265,74 +1263,128 @@ router.get('/scan-history', async (req, res) => {
   }
 });
 
-// GET /api/fiis/:ticker/detail — página de detalhe de um FII
+// Cache StatusInvest (todos os FIIs, TTL 6h)
+let _siCache = null;
+let _siCacheTs = 0;
+const SI_TTL = 6 * 60 * 60 * 1000;
+
+async function getStatusInvestData(ticker) {
+  try {
+    if (!_siCache || Date.now() - _siCacheTs > SI_TTL) {
+      const { data } = await axios.get(
+        'https://statusinvest.com.br/category/advancedsearchresultpaginated?search=%7B%7D&categoryType=2&page=0&take=600',
+        { timeout: 15000, headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json', 'Referer': 'https://statusinvest.com.br/' } }
+      );
+      _siCache = {};
+      for (const item of (data?.list || [])) _siCache[item.ticker] = item;
+      _siCacheTs = Date.now();
+    }
+    return _siCache[ticker] || null;
+  } catch (_) { return null; }
+}
+
+// GET /api/fiis/:ticker/detail?range=1mo|3mo
 router.get('/:ticker/detail', async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
+  const range  = ['1mo', '3mo'].includes(req.query.range) ? req.query.range : '1mo';
   try {
-    const [marketRes, enrichedRes, dadosRes] = await Promise.all([
+    const [marketRes, enrichedRes, dadosRes, si] = await Promise.all([
       pool.query('SELECT * FROM fiis_market WHERE ticker = $1', [ticker]),
       pool.query('SELECT dados FROM fii_enriched_cache WHERE ticker = $1', [ticker]),
       pool.query('SELECT * FROM fii_dados WHERE ticker = $1', [ticker]),
+      getStatusInvestData(ticker),
     ]);
 
-    const market   = marketRes.rows[0]   || null;
+    const market   = marketRes.rows[0]       || null;
     const enriched = enrichedRes.rows[0]?.dados || null;
-    const dados    = dadosRes.rows[0]    || null;
+    const dados    = dadosRes.rows[0]        || null;
 
-    // Busca dados brapi: cotação atual + histórico 1 mês + 52 semanas
+    // brapi: cotação atual + chart + 52w range
     let brapi = null;
     try {
-      const url = `https://brapi.dev/api/quote/${ticker}?range=1mo&interval=1d&token=${BRAPI_TOKEN}`;
+      const url = `https://brapi.dev/api/quote/${ticker}?range=${range}&interval=1d&token=${BRAPI_TOKEN}`;
       const { data } = await axios.get(url, { timeout: 8000 });
       const q = data?.results?.[0];
       if (q) {
+        const hist = (q.historicalDataPrice || []).map(p => ({
+          date:   new Date(p.date * 1000).toISOString().substring(0, 10),
+          close:  p.close,
+          volume: p.volume,
+        })).filter(p => p.close);
+
+        // Min/Máx do mês corrente (últimos 30 dias)
+        const last30 = hist.slice(-22);
+        const minMes  = last30.length ? Math.min(...last30.map(p => p.close)) : null;
+        const maxMes  = last30.length ? Math.max(...last30.map(p => p.close)) : null;
+
         brapi = {
-          price:            q.regularMarketPrice,
-          change_pct:       q.regularMarketChangePercent,
-          low_52w:          q.fiftyTwoWeekLow,
-          high_52w:         q.fiftyTwoWeekHigh,
-          name:             q.longName || q.shortName,
-          chart: (q.historicalDataPrice || []).map(p => ({
-            date:  new Date(p.date * 1000).toISOString().substring(0, 10),
-            close: p.close,
-          })).filter(p => p.close),
+          price:      q.regularMarketPrice,
+          change_pct: q.regularMarketChangePercent,
+          day_high:   q.regularMarketDayHigh,
+          day_low:    q.regularMarketDayLow,
+          volume:     q.regularMarketVolume,
+          low_52w:    q.fiftyTwoWeekLow,
+          high_52w:   q.fiftyTwoWeekHigh,
+          name:       q.longName || q.shortName,
+          min_mes:    minMes,
+          max_mes:    maxMes,
+          chart:      hist,
         };
       }
     } catch (_) {}
 
-    if (!market && !brapi) {
+    if (!market && !brapi && !si) {
       return res.status(404).json({ error: 'FII não encontrado' });
     }
 
+    // Valorização 12m: não disponível sem range=1y — usa cota_cagr do SI como proxy
+    const price = brapi?.price ?? market?.price ?? si?.price ?? null;
+
     res.json({
       ticker,
-      name:         brapi?.name || market?.name || ticker,
-      segment:      market?.segment || null,
+      name:     brapi?.name || si?.companyname || market?.name || ticker,
+      segment:  si?.subsectorname || si?.segment || market?.segment || null,
+
       // Cotação
-      price:        brapi?.price    || market?.price,
-      change_pct:   brapi?.change_pct ?? null,
-      low_52w:      brapi?.low_52w   ?? null,
-      high_52w:     brapi?.high_52w  ?? null,
-      // Indicadores
-      dy_12m:       market?.dy_12m   ?? dados?.dy_12m   ?? null,
-      pvp:          market?.pvp      ?? dados?.pvp      ?? null,
-      liquidity:    market?.liquidity ?? enriched?.liquidity ?? null,
-      net_worth:    market?.net_worth ?? enriched?.net_worth ?? null,
-      vacancy:      market?.vacancy  ?? enriched?.vacancy  ?? null,
-      properties:   market?.properties ?? enriched?.properties ?? null,
-      wault:        enriched?.wault  ?? dados?.wault ?? null,
-      leverage:     enriched?.leverage ?? dados?.leverage ?? null,
-      div_growth:   enriched?.div_growth ?? dados?.div_growth ?? null,
-      score:        market?.score    ?? null,
-      action:       market?.action   ?? null,
+      price,
+      change_pct: brapi?.change_pct ?? null,
+      day_high:   brapi?.day_high   ?? null,
+      day_low:    brapi?.day_low    ?? null,
+      volume:     brapi?.volume     ?? null,
+      low_52w:    brapi?.low_52w    ?? null,
+      high_52w:   brapi?.high_52w   ?? null,
+      min_mes:    brapi?.min_mes    ?? null,
+      max_mes:    brapi?.max_mes    ?? null,
+
+      // Indicadores fundamentais
+      dy_12m:    si?.dy           ?? market?.dy_12m  ?? dados?.dy_12m  ?? null,
+      pvp:       si?.p_vp         ?? market?.pvp     ?? dados?.pvp     ?? null,
+      vpa:       si?.valorpatrimonialcota ?? null,   // val. patrimonial p/cota
+      liquidity: si?.liquidezmediadiaria  ?? market?.liquidity ?? enriched?.liquidity ?? null,
+      net_worth: si?.patrimonio   ?? market?.net_worth ?? enriched?.net_worth ?? null,
+      valor_mercado: (price && si?.numerocotas) ? price * si.numerocotas : null,
+      pct_caixa: si?.percentualcaixa ?? null,        // valor em caixa %
+      dividend_cagr: si?.dividend_cagr ?? enriched?.div_growth ?? null,
+      cota_cagr:     si?.cota_cagr     ?? null,
+      num_cotistas:  si?.numerocotistas ?? null,
+      num_cotas:     si?.numerocotas    ?? null,
+      vacancy:   market?.vacancy  ?? enriched?.vacancy  ?? null,
+      properties:market?.properties ?? enriched?.properties ?? null,
+      wault:     enriched?.wault  ?? dados?.wault ?? null,
+      score:     market?.score    ?? null,
+      action:    market?.action   ?? null,
+
       // Último rendimento
-      ultimo_dy_valor: enriched?.ultimo_dy_valor ?? null,
-      ultimo_dy_com:   enriched?.ultimo_dy_com   ?? null,
-      ultimo_dy_pgto:  enriched?.ultimo_dy_pgto  ?? null,
+      ultimo_dy_valor: si?.lastdividend   ?? enriched?.ultimo_dy_valor ?? null,
+      ultimo_dy_com:   enriched?.ultimo_dy_com  ?? null,
+      ultimo_dy_pgto:  enriched?.ultimo_dy_pgto ?? null,
+
       // Descrição
-      descricao:    enriched?.descricao ?? null,
+      descricao: enriched?.descricao ?? null,
+
       // Chart
-      chart:        brapi?.chart || [],
+      chart:     brapi?.chart || [],
+      range,
     });
   } catch (err) {
     console.error('[fiis/detail]', err.message);
