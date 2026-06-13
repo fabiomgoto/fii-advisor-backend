@@ -1265,6 +1265,81 @@ router.get('/scan-history', async (req, res) => {
   }
 });
 
+// GET /api/fiis/:ticker/detail — página de detalhe de um FII
+router.get('/:ticker/detail', async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase();
+  try {
+    const [marketRes, enrichedRes, dadosRes] = await Promise.all([
+      pool.query('SELECT * FROM fiis_market WHERE ticker = $1', [ticker]),
+      pool.query('SELECT dados FROM fii_enriched_cache WHERE ticker = $1', [ticker]),
+      pool.query('SELECT * FROM fii_dados WHERE ticker = $1', [ticker]),
+    ]);
+
+    const market   = marketRes.rows[0]   || null;
+    const enriched = enrichedRes.rows[0]?.dados || null;
+    const dados    = dadosRes.rows[0]    || null;
+
+    // Busca dados brapi: cotação atual + histórico 1 mês + 52 semanas
+    let brapi = null;
+    try {
+      const url = `https://brapi.dev/api/quote/${ticker}?range=1mo&interval=1d&token=${BRAPI_TOKEN}`;
+      const { data } = await axios.get(url, { timeout: 8000 });
+      const q = data?.results?.[0];
+      if (q) {
+        brapi = {
+          price:            q.regularMarketPrice,
+          change_pct:       q.regularMarketChangePercent,
+          low_52w:          q.fiftyTwoWeekLow,
+          high_52w:         q.fiftyTwoWeekHigh,
+          name:             q.longName || q.shortName,
+          chart: (q.historicalDataPrice || []).map(p => ({
+            date:  new Date(p.date * 1000).toISOString().substring(0, 10),
+            close: p.close,
+          })).filter(p => p.close),
+        };
+      }
+    } catch (_) {}
+
+    if (!market && !brapi) {
+      return res.status(404).json({ error: 'FII não encontrado' });
+    }
+
+    res.json({
+      ticker,
+      name:         brapi?.name || market?.name || ticker,
+      segment:      market?.segment || null,
+      // Cotação
+      price:        brapi?.price    || market?.price,
+      change_pct:   brapi?.change_pct ?? null,
+      low_52w:      brapi?.low_52w   ?? null,
+      high_52w:     brapi?.high_52w  ?? null,
+      // Indicadores
+      dy_12m:       market?.dy_12m   ?? dados?.dy_12m   ?? null,
+      pvp:          market?.pvp      ?? dados?.pvp      ?? null,
+      liquidity:    market?.liquidity ?? enriched?.liquidity ?? null,
+      net_worth:    market?.net_worth ?? enriched?.net_worth ?? null,
+      vacancy:      market?.vacancy  ?? enriched?.vacancy  ?? null,
+      properties:   market?.properties ?? enriched?.properties ?? null,
+      wault:        enriched?.wault  ?? dados?.wault ?? null,
+      leverage:     enriched?.leverage ?? dados?.leverage ?? null,
+      div_growth:   enriched?.div_growth ?? dados?.div_growth ?? null,
+      score:        market?.score    ?? null,
+      action:       market?.action   ?? null,
+      // Último rendimento
+      ultimo_dy_valor: enriched?.ultimo_dy_valor ?? null,
+      ultimo_dy_com:   enriched?.ultimo_dy_com   ?? null,
+      ultimo_dy_pgto:  enriched?.ultimo_dy_pgto  ?? null,
+      // Descrição
+      descricao:    enriched?.descricao ?? null,
+      // Chart
+      chart:        brapi?.chart || [],
+    });
+  } catch (err) {
+    console.error('[fiis/detail]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/waitlist — lista de espera plano PRO
 router.post('/waitlist', async (req, res) => {
   const { email } = req.body;
