@@ -110,20 +110,72 @@ router.patch('/users/:userId/journey', async (req, res) => {
   }
 });
 
-// GET /api/admin/users/:userId/portfolio — carteira do usuário
+// GET /api/admin/users/:userId/portfolio — carteira detalhada do usuário
 router.get('/users/:userId/portfolio', async (req, res) => {
   try {
     const { rows } = await pool.query(
       `SELECT pf.ticker, pf.quantity, pf.avg_price,
-              fm.price, fm.dy_12m, fm.pvp, fm.score
+              fm.price, fm.dy_12m, fm.pvp, fm.score,
+              COALESCE(c.total_aportado, 0)  AS total_aportado,
+              COALESCE(pr.total_proventos, 0) AS total_proventos
        FROM portfolio_fiis pf
        LEFT JOIN fiis_market fm ON fm.ticker = pf.ticker
+       LEFT JOIN (
+         SELECT ticker, SUM(quantity * price_paid) AS total_aportado
+         FROM contributions WHERE user_id = $1 GROUP BY ticker
+       ) c  ON c.ticker  = pf.ticker
+       LEFT JOIN (
+         SELECT ticker, SUM(total_recebido) AS total_proventos
+         FROM fii_proventos WHERE user_id = $1 GROUP BY ticker
+       ) pr ON pr.ticker = pf.ticker
        WHERE pf.user_id = $1
-       ORDER BY pf.ticker`,
+       ORDER BY (pf.quantity * COALESCE(fm.price, pf.avg_price, 0)) DESC`,
       [req.params.userId]
     );
     res.json(rows);
   } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/carteiras — resumo de todas as carteiras (admin overview)
+router.get('/carteiras', async (req, res) => {
+  try {
+    const { rows } = await pool.query(`
+      SELECT
+        pf.user_id,
+        COUNT(DISTINCT pf.ticker)                                             AS num_fiis,
+        SUM(pf.quantity * COALESCE(fm.price, pf.avg_price, 0))               AS valor_atual,
+        SUM(pf.quantity * pf.avg_price)                                       AS total_investido,
+        COALESCE(pr.total_proventos, 0)                                       AS total_proventos,
+        up.investor_profile_v2  AS perfil,
+        up.financial_moment     AS momento,
+        up.journey_level
+      FROM portfolio_fiis pf
+      LEFT JOIN fiis_market fm   ON fm.ticker   = pf.ticker
+      LEFT JOIN user_profiles up ON up.user_id  = pf.user_id
+      LEFT JOIN (
+        SELECT user_id, SUM(total_recebido) AS total_proventos
+        FROM fii_proventos GROUP BY user_id
+      ) pr ON pr.user_id = pf.user_id
+      GROUP BY pf.user_id, pr.total_proventos, up.investor_profile_v2, up.financial_moment, up.journey_level
+      ORDER BY valor_atual DESC NULLS LAST
+    `);
+
+    // Busca emails via Supabase Admin
+    const { createClient } = require('@supabase/supabase-js');
+    const supaAdmin = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    );
+    const { data: { users: authUsers } } = await supaAdmin.auth.admin.listUsers({ perPage: 1000 });
+    const emailMap = {};
+    for (const u of authUsers) emailMap[u.id] = u.email;
+
+    res.json(rows.map(r => ({ ...r, email: emailMap[r.user_id] || r.user_id })));
+  } catch (err) {
+    console.error('[admin/carteiras]', err.message);
     res.status(500).json({ error: err.message });
   }
 });
