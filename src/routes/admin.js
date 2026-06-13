@@ -114,22 +114,27 @@ router.patch('/users/:userId/journey', async (req, res) => {
 router.get('/users/:userId/portfolio', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      `SELECT pf.ticker, pf.quantity, pf.avg_price,
-              fm.price, fm.dy_12m, fm.pvp, fm.score,
-              COALESCE(c.total_aportado, 0)  AS total_aportado,
-              COALESCE(pr.total_proventos, 0) AS total_proventos
+      `SELECT
+         pf.ticker,
+         pf.name,
+         pf.segment,
+         COALESCE(SUM(c.quantity), 0)                                        AS quantity,
+         CASE WHEN SUM(c.quantity) > 0
+              THEN SUM(c.quantity * c.price_paid) / SUM(c.quantity)
+              ELSE 0 END                                                      AS avg_price,
+         COALESCE(SUM(c.quantity * c.price_paid), 0)                         AS total_aportado,
+         fm.price, fm.dy_12m, fm.pvp, fm.score,
+         COALESCE(pr.total_proventos, 0)                                      AS total_proventos
        FROM portfolio_fiis pf
-       LEFT JOIN fiis_market fm ON fm.ticker = pf.ticker
-       LEFT JOIN (
-         SELECT ticker, SUM(quantity * price_paid) AS total_aportado
-         FROM contributions WHERE user_id = $1 GROUP BY ticker
-       ) c  ON c.ticker  = pf.ticker
+       LEFT JOIN contributions c  ON c.ticker  = pf.ticker AND c.user_id = pf.user_id
+       LEFT JOIN fiis_market   fm ON fm.ticker = pf.ticker
        LEFT JOIN (
          SELECT ticker, SUM(total_recebido) AS total_proventos
          FROM fii_proventos WHERE user_id = $1 GROUP BY ticker
        ) pr ON pr.ticker = pf.ticker
        WHERE pf.user_id = $1
-       ORDER BY (pf.quantity * COALESCE(fm.price, pf.avg_price, 0)) DESC`,
+       GROUP BY pf.ticker, pf.name, pf.segment, fm.price, fm.dy_12m, fm.pvp, fm.score, pr.total_proventos
+       ORDER BY (COALESCE(SUM(c.quantity), 0) * COALESCE(fm.price, 0)) DESC`,
       [req.params.userId]
     );
     res.json(rows);
@@ -144,16 +149,22 @@ router.get('/carteiras', async (req, res) => {
     const { rows } = await pool.query(`
       SELECT
         pf.user_id,
-        COUNT(DISTINCT pf.ticker)                                             AS num_fiis,
-        SUM(pf.quantity * COALESCE(fm.price, pf.avg_price, 0))               AS valor_atual,
-        SUM(pf.quantity * pf.avg_price)                                       AS total_investido,
-        COALESCE(pr.total_proventos, 0)                                       AS total_proventos,
+        COUNT(DISTINCT pf.ticker)                                              AS num_fiis,
+        SUM(c_agg.cotas * COALESCE(fm.price, 0))                              AS valor_atual,
+        SUM(c_agg.total_aportado)                                              AS total_investido,
+        COALESCE(pr.total_proventos, 0)                                        AS total_proventos,
         up.investor_profile_v2  AS perfil,
         up.financial_moment     AS momento,
         up.journey_level
       FROM portfolio_fiis pf
-      LEFT JOIN fiis_market fm   ON fm.ticker   = pf.ticker
-      LEFT JOIN user_profiles up ON up.user_id  = pf.user_id
+      LEFT JOIN (
+        SELECT ticker, user_id,
+               SUM(quantity)              AS cotas,
+               SUM(quantity * price_paid) AS total_aportado
+        FROM contributions GROUP BY ticker, user_id
+      ) c_agg ON c_agg.ticker = pf.ticker AND c_agg.user_id = pf.user_id
+      LEFT JOIN fiis_market   fm ON fm.ticker  = pf.ticker
+      LEFT JOIN user_profiles up ON up.user_id = pf.user_id
       LEFT JOIN (
         SELECT user_id, SUM(total_recebido) AS total_proventos
         FROM fii_proventos GROUP BY user_id
