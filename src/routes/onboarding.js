@@ -40,7 +40,8 @@ router.get('/status', async (req, res) => {
     const { rows } = await pool.query(
       `SELECT journey_level, wizard_completo, onboarding_completo,
               tour_completo, investor_score, investor_profile,
-              apresentacao_vista
+              apresentacao_vista,
+              financial_wizard_done, investor_wizard_done
        FROM user_profiles WHERE user_id = $1`,
       [userId]
     );
@@ -49,6 +50,7 @@ router.get('/status', async (req, res) => {
         journey_level: null, wizard_completo: false,
         onboarding_completo: false, tour_completo: false,
         investor_score: null, investor_profile: null,
+        financial_wizard_done: false, investor_wizard_done: false,
       });
     }
     res.json(rows[0]);
