@@ -1360,6 +1360,30 @@ let _siCache = null;
 let _siCacheTs = 0;
 const SI_TTL = 6 * 60 * 60 * 1000;
 
+// Busca próximo rendimento declarado (data COM futura) via SI provents
+async function getProximoRendimento(ticker) {
+  try {
+    function parseDateBR(s) {
+      if (!s || !s.includes('/')) return null;
+      const [d, m, y] = s.split('/');
+      return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
+    }
+    const hoje = new Date().toISOString().substring(0, 10);
+    const futuro = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
+    const { data } = await axios.get(
+      `https://statusinvest.com.br/fii/companytickerprovents?ticker=${ticker}&type=1&datetype=3&startDate=${hoje}&endDate=${futuro}`,
+      { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': `https://statusinvest.com.br/fundos-imobiliarios/${ticker.toLowerCase()}`, 'Accept': 'application/json' } }
+    );
+    const list = data?.assetEarningsModels || [];
+    // Pega o mais próximo (menor data COM futura)
+    const futuros = list
+      .map(p => ({ valor: parseFloat(p.v || 0), data_com: parseDateBR(p.ed), data_pgto: parseDateBR(p.pd) }))
+      .filter(p => p.data_com && p.data_com >= hoje)
+      .sort((a, b) => a.data_com.localeCompare(b.data_com));
+    return futuros[0] || null;
+  } catch (_) { return null; }
+}
+
 async function getStatusInvestData(ticker) {
   try {
     if (!_siCache || Date.now() - _siCacheTs > SI_TTL) {
@@ -1380,11 +1404,12 @@ router.get('/:ticker/detail', async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
   const range  = ['1mo', '3mo'].includes(req.query.range) ? req.query.range : '1mo';
   try {
-    const [marketRes, enrichedRes, dadosRes, si] = await Promise.all([
+    const [marketRes, enrichedRes, dadosRes, si, proximo] = await Promise.all([
       pool.query('SELECT * FROM fiis_market WHERE ticker = $1', [ticker]),
       pool.query('SELECT dados FROM fii_enriched_cache WHERE ticker = $1', [ticker]),
       pool.query('SELECT * FROM fii_dados WHERE ticker = $1', [ticker]),
       getStatusInvestData(ticker),
+      getProximoRendimento(ticker),
     ]);
 
     const market   = marketRes.rows[0]       || null;
@@ -1470,6 +1495,11 @@ router.get('/:ticker/detail', async (req, res) => {
       ultimo_dy_valor: si?.lastdividend   ?? enriched?.ultimo_dy_valor ?? null,
       ultimo_dy_com:   enriched?.ultimo_dy_com  ?? null,
       ultimo_dy_pgto:  enriched?.ultimo_dy_pgto ?? null,
+
+      // Próximo rendimento declarado
+      proximo_dy_valor: proximo?.valor    ?? null,
+      proximo_dy_com:   proximo?.data_com ?? null,
+      proximo_dy_pgto:  proximo?.data_pgto ?? null,
 
       // Descrição
       descricao: enriched?.descricao ?? null,
