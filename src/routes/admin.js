@@ -92,6 +92,98 @@ router.post('/users/:userId/reset-wizard', async (req, res) => {
   }
 });
 
+// PATCH /api/admin/users/:userId/journey — altera nível de jornada
+router.patch('/users/:userId/journey', async (req, res) => {
+  const { journey_level } = req.body;
+  const VALID = ['iniciante', 'intermediario', 'avancado'];
+  if (!VALID.includes(journey_level)) {
+    return res.status(400).json({ error: 'journey_level inválido' });
+  }
+  try {
+    await pool.query(
+      `UPDATE user_profiles SET journey_level = $1, updated_at = NOW() WHERE user_id = $2`,
+      [journey_level, req.params.userId]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/users/:userId/portfolio — carteira do usuário
+router.get('/users/:userId/portfolio', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT pf.ticker, pf.quantity, pf.avg_price,
+              fm.price, fm.dy_12m, fm.pvp, fm.score
+       FROM portfolio_fiis pf
+       LEFT JOIN fiis_market fm ON fm.ticker = pf.ticker
+       WHERE pf.user_id = $1
+       ORDER BY pf.ticker`,
+      [req.params.userId]
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/stats — métricas gerais da plataforma
+router.get('/stats', async (req, res) => {
+  try {
+    const [userRes, portfolioRes, scanRes, proventosRes] = await Promise.all([
+      pool.query(`
+        SELECT
+          COUNT(*) AS total_users,
+          COUNT(*) FILTER (WHERE onboarding_completo) AS onboarding_ok,
+          COUNT(*) FILTER (WHERE investor_wizard_done AND financial_wizard_done) AS dual_ok,
+          COUNT(*) FILTER (WHERE journey_level = 'iniciante') AS iniciante,
+          COUNT(*) FILTER (WHERE journey_level = 'intermediario') AS intermediario,
+          COUNT(*) FILTER (WHERE journey_level = 'avancado') AS avancado
+        FROM user_profiles
+      `),
+      pool.query(`
+        SELECT COUNT(DISTINCT user_id) AS users_with_portfolio,
+               COUNT(*) AS total_positions,
+               COUNT(DISTINCT ticker) AS unique_tickers
+        FROM portfolio_fiis
+      `),
+      pool.query(`
+        SELECT COUNT(*) AS total_scans,
+               MAX(scanned_at) AS last_scan,
+               (SELECT total_scanned FROM fii_scan_history ORDER BY scanned_at DESC LIMIT 1) AS last_total
+        FROM fii_scan_history
+      `),
+      pool.query(`
+        SELECT COUNT(*) AS total_dividends,
+               COUNT(DISTINCT user_id) AS users_with_dividends
+        FROM dividends
+      `),
+    ]);
+    res.json({
+      users:     userRes.rows[0],
+      portfolio: portfolioRes.rows[0],
+      scan:      scanRes.rows[0],
+      proventos: proventosRes.rows[0],
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/admin/scan-history — histórico de varreduras (admin view)
+router.get('/scan-history', async (req, res) => {
+  try {
+    const { rows } = await pool.query(
+      `SELECT id, scanned_at, total_scanned, top3, filtrados
+       FROM fii_scan_history ORDER BY scanned_at DESC LIMIT 20`
+    );
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // DELETE /api/admin/users/:userId — exclui conta
 router.delete('/users/:userId', async (req, res) => {
   const { userId } = req.params;
