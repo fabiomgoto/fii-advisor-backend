@@ -16,6 +16,7 @@ app.use('/api/profile',             require('./routes/profile'));
 app.use('/api/onboarding',          require('./routes/onboarding'));
 app.use('/api/recommendations',     require('./routes/recommendations'));
 app.use('/api/simulated-portfolio', require('./routes/simulatedPortfolio'));
+app.use('/api/admin',               require('./routes/admin'));
 
 // ── Health check ──────────────────────────────────────────────────────────────
 const healthPayload = (req, res) => res.json({
