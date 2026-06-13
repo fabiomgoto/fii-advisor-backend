@@ -1369,18 +1369,20 @@ async function getProximoRendimento(ticker) {
       return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
     }
     const hoje = new Date().toISOString().substring(0, 10);
+    // startDate 45 dias atrás: captura COMs já passados mas pagamento ainda pendente
+    const inicio = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
     const futuro = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
     const { data } = await axios.get(
-      `https://statusinvest.com.br/fii/companytickerprovents?ticker=${ticker}&type=1&datetype=3&startDate=${hoje}&endDate=${futuro}`,
+      `https://statusinvest.com.br/fii/companytickerprovents?ticker=${ticker}&type=1&datetype=3&startDate=${inicio}&endDate=${futuro}`,
       { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': `https://statusinvest.com.br/fundos-imobiliarios/${ticker.toLowerCase()}`, 'Accept': 'application/json' } }
     );
     const list = data?.assetEarningsModels || [];
-    // Pega o mais próximo (menor data COM futura)
-    const futuros = list
+    // Filtra por data de PAGAMENTO >= hoje (COM pode já ter passado, mas pgto ainda não)
+    const pendentes = list
       .map(p => ({ valor: parseFloat(p.v || 0), data_com: parseDateBR(p.ed), data_pgto: parseDateBR(p.pd) }))
-      .filter(p => p.data_com && p.data_com >= hoje)
-      .sort((a, b) => a.data_com.localeCompare(b.data_com));
-    return futuros[0] || null;
+      .filter(p => p.data_pgto && p.data_pgto >= hoje)
+      .sort((a, b) => a.data_pgto.localeCompare(b.data_pgto));
+    return pendentes[0] || null;
   } catch (_) { return null; }
 }
 
