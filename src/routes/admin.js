@@ -6,7 +6,6 @@ const pool    = require('../db/connection');
 const auth    = require('../middleware/auth');
 
 const ADMIN_IDS = new Set([
-  '4897248a-f6e3-46c0-b801-6b7c5ac2ea82', // fabiomgoto@yahoo.com.br
   'd2083b36-3899-4287-9649-e4b20e1f9103', // fabiomgoto@gmail.com
 ]);
 
