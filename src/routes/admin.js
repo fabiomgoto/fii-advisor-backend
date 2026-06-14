@@ -30,7 +30,7 @@ router.get('/users', async (req, res) => {
       { auth: { autoRefreshToken: false, persistSession: false } }
     );
 
-    const [{ data: authData }, profilesRes] = await Promise.all([
+    const [{ data: authData }, profilesRes, activityRes] = await Promise.all([
       supaAdmin.auth.admin.listUsers({ perPage: 1000 }),
       pool.query(`
         SELECT user_id, journey_level, onboarding_completo,
@@ -40,13 +40,26 @@ router.get('/users', async (req, res) => {
                created_at, updated_at
         FROM user_profiles
       `),
+      pool.query(`
+        SELECT user_id,
+               SUM(visits) AS total_visits,
+               COUNT(DISTINCT screen) AS screens_count,
+               json_agg(json_build_object('screen', screen, 'visits', visits)
+                        ORDER BY visits DESC) AS screens
+        FROM user_activity
+        GROUP BY user_id
+      `).catch(() => ({ rows: [] })),
     ]);
 
     const profileMap = {};
     for (const p of profilesRes.rows) profileMap[p.user_id] = p;
 
+    const activityMap = {};
+    for (const a of activityRes.rows) activityMap[a.user_id] = a;
+
     const users = authData.users.map(u => {
       const p = profileMap[u.id] || {};
+      const a = activityMap[u.id] || {};
       return {
         id:                   u.id,
         email:                u.email,
@@ -61,6 +74,9 @@ router.get('/users', async (req, res) => {
         investor_score:       p.investor_score_v2    || null,
         financial_score:      p.financial_score      || null,
         profile_updated_at:   p.updated_at           || null,
+        total_visits:         a.total_visits          ? Number(a.total_visits) : 0,
+        screens_count:        a.screens_count         ? Number(a.screens_count) : 0,
+        screens:              a.screens               || [],
       };
     });
 

@@ -3,15 +3,26 @@ const { buscarLoteFIIs } = require('../collectors/fiis');
 const { calcularScore, getAction } = require('../engine/fii-scorer');
 const { gerarSintese } = require('../engine/fii-ai');
 
+// Tickers extintos, incorporados ou com problemas — nunca recomendar
+const BLACKLIST = new Set(['XPIN11', 'FIGS11', 'RBVO11', 'NVHO11', 'CVBI11']);
+
 // Universo base sempre monitorado
 const FIIS_BASE = [
   'HGLG11', 'RZTR11', 'SNCI11', 'SNAG11', 'RZAK11', 'KNCR11',
   'XPML11', 'VISC11', 'BRCO11', 'RBRR11', 'HSML11', 'BTLG11',
-  'TRXF11', 'GGRC11', 'VRTA11', 'KNRI11', 'MCCI11', 'CVBI11',
+  'TRXF11', 'GGRC11', 'VRTA11', 'KNRI11', 'MCCI11',
 ];
 
 async function rodarFIIScanner() {
   console.log('[fii-scanner] Iniciando varredura...');
+
+  // Remove tickers extintos/blacklistados do banco (caso estejam presentes)
+  try {
+    const blackArr = [...BLACKLIST];
+    await pool.query('DELETE FROM fiis_market WHERE ticker = ANY($1)', [blackArr]);
+  } catch (e) {
+    console.warn('[fii-scanner] Erro ao purgar blacklist:', e.message);
+  }
 
   // Inclui todos os tickers ativos nas carteiras dos usuários
   let tickersUsuarios = [];
@@ -30,6 +41,7 @@ async function rodarFIIScanner() {
   const dados = await buscarLoteFIIs(universo);
 
   for (const fii of dados) {
+    if (BLACKLIST.has(fii.ticker)) continue;
     const score  = calcularScore(fii);
     const action = getAction(score);
     await pool.query(

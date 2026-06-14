@@ -93,7 +93,9 @@ async function fetchPrecos(tickers) {
 router.get('/market', async (req, res) => {
   try {
     const { rows } = await pool.query(
-      'SELECT * FROM fiis_market ORDER BY score DESC NULLS LAST'
+      `SELECT * FROM fiis_market
+       WHERE ticker != ALL(ARRAY['XPIN11','FIGS11','RBVO11','NVHO11','CVBI11'])
+       ORDER BY score DESC NULLS LAST`
     );
     res.json(rows);
   } catch (err) {
@@ -852,7 +854,8 @@ const profileSinteseCache = {}; // key: "conservador_saudavel" → { sintese, to
 const PROFILE_SINTESE_TTL = 60 * 60 * 1000; // 1h
 
 // Blacklist permanente — FIIs com problemas jurídicos ou em recuperação judicial
-const BLACKLIST = ['XPIN11', 'FIGS11', 'RBVO11', 'NVHO11'];
+// Inclui tickers extintos/incorporados que não existem mais na B3
+const BLACKLIST = ['XPIN11', 'FIGS11', 'RBVO11', 'NVHO11', 'CVBI11'];
 
 function aplicarFiltros(ticker, d) {
   if (BLACKLIST.includes(ticker)) {
