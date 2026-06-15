@@ -294,4 +294,105 @@ router.delete('/users/:userId', async (req, res) => {
   }
 });
 
+// ── Error monitoring routes ───────────────────────────────────────────────────
+
+router.get('/errors', async (req, res) => {
+  try {
+    const { type, severity, resolved = 'false', page = 1, limit = 50, days = 7 } = req.query;
+    const offset = (parseInt(page) - 1) * parseInt(limit);
+
+    const conditions = [`created_at > NOW() - INTERVAL '1 day' * $1`];
+    const params     = [parseInt(days)];
+    let idx          = 2;
+
+    if (type)     { conditions.push(`type = $${idx++}`);     params.push(type); }
+    if (severity) { conditions.push(`severity = $${idx++}`); params.push(severity); }
+    if (resolved !== 'all') {
+      conditions.push(`resolved = $${idx++}`);
+      params.push(resolved === 'true');
+    }
+
+    const where = `WHERE ${conditions.join(' AND ')}`;
+
+    const [{ rows: errors }, { rows: [{ count }] }] = await Promise.all([
+      pool.query(
+        `SELECT id, type, source, message, stack, metadata, user_id, severity, resolved, resolved_at, resolved_by, created_at
+         FROM error_logs ${where} ORDER BY created_at DESC LIMIT $${idx} OFFSET $${idx + 1}`,
+        [...params, parseInt(limit), offset]
+      ),
+      pool.query(`SELECT COUNT(*) FROM error_logs ${where}`, params),
+    ]);
+
+    res.json({ errors, total: parseInt(count), page: parseInt(page), pages: Math.ceil(parseInt(count) / parseInt(limit)) });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/errors/stats', async (req, res) => {
+  try {
+    const [{ rows: byType }, { rows: bySeverity }, { rows: timeline }] = await Promise.all([
+      pool.query(`
+        SELECT type,
+          COUNT(*) AS total,
+          COUNT(*) FILTER (WHERE resolved = FALSE) AS open,
+          COUNT(*) FILTER (WHERE created_at > NOW() - INTERVAL '24 hours') AS last_24h,
+          COUNT(*) FILTER (WHERE severity = 'critical') AS critical,
+          MAX(created_at) AS last_seen
+        FROM error_logs WHERE created_at > NOW() - INTERVAL '30 days'
+        GROUP BY type ORDER BY total DESC
+      `),
+      pool.query(`
+        SELECT severity, COUNT(*) AS total FROM error_logs
+        WHERE created_at > NOW() - INTERVAL '7 days' AND resolved = FALSE
+        GROUP BY severity
+      `),
+      pool.query(`
+        SELECT DATE_TRUNC('hour', created_at) AS hour, COUNT(*) AS count, type
+        FROM error_logs WHERE created_at > NOW() - INTERVAL '24 hours'
+        GROUP BY hour, type ORDER BY hour
+      `),
+    ]);
+    res.json({ byType, bySeverity, timeline });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/errors/:id/resolve', async (req, res) => {
+  try {
+    await pool.query(
+      `UPDATE error_logs SET resolved = TRUE, resolved_at = NOW(), resolved_by = $1 WHERE id = $2`,
+      [req.userId, req.params.id]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/errors/resolved', async (req, res) => {
+  try {
+    const { rowCount } = await pool.query(
+      `DELETE FROM error_logs WHERE resolved = TRUE AND resolved_at < NOW() - INTERVAL '30 days'`
+    );
+    res.json({ deleted: rowCount });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/admin/errors/frontend — recebe erros do React ErrorBoundary (auth but not admin-only)
+// Note: bypasses requireAdmin because ErrorBoundary can fire for any logged-in user
+router.post('/errors/frontend', async (req, res) => {
+  try {
+    const { message, stack, metadata } = req.body;
+    const { logFrontendError } = require('../services/errorLogService');
+    await logFrontendError(message, stack, metadata, req.userId);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;

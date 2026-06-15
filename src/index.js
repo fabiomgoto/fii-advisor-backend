@@ -18,6 +18,7 @@ app.use('/api/recommendations',     require('./routes/recommendations'));
 app.use('/api/simulated-portfolio', require('./routes/simulatedPortfolio'));
 app.use('/api/admin',               require('./routes/admin'));
 app.use('/api/activity',            require('./routes/activity'));
+app.use(require('./middleware/errorHandler'));
 
 // ── Health check ──────────────────────────────────────────────────────────────
 const healthPayload = (req, res) => res.json({
@@ -273,6 +274,28 @@ async function runMigrations() {
        OR investor_score_v2 IS NOT NULL
        OR financial_score IS NOT NULL
   `);
+
+  // ── Migration 010: Error Logs ─────────────────────────────────────────────
+  await run('error_logs_table', `
+    CREATE TABLE IF NOT EXISTS error_logs (
+      id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      type        VARCHAR(50)  NOT NULL,
+      source      VARCHAR(200),
+      message     TEXT         NOT NULL,
+      stack       TEXT,
+      metadata    JSONB,
+      user_id     UUID,
+      severity    VARCHAR(20)  NOT NULL DEFAULT 'error',
+      resolved    BOOLEAN      NOT NULL DEFAULT FALSE,
+      resolved_at TIMESTAMP,
+      resolved_by VARCHAR(100),
+      created_at  TIMESTAMP    NOT NULL DEFAULT NOW()
+    )
+  `);
+  await run('error_logs_idx_type',     `CREATE INDEX IF NOT EXISTS idx_error_logs_type     ON error_logs(type)`);
+  await run('error_logs_idx_severity', `CREATE INDEX IF NOT EXISTS idx_error_logs_severity ON error_logs(severity)`);
+  await run('error_logs_idx_resolved', `CREATE INDEX IF NOT EXISTS idx_error_logs_resolved ON error_logs(resolved)`);
+  await run('error_logs_idx_created',  `CREATE INDEX IF NOT EXISTS idx_error_logs_created  ON error_logs(created_at DESC)`);
 
   console.log('[MIGRATIONS] concluídas');
 }
