@@ -176,14 +176,19 @@ router.get('/portfolio', async (req, res) => {
 
     // Enriquece cada FII com dados de vacancy, properties, div_growth do cache (assíncrono)
     const enrichedMap = {};
-    await Promise.all(fiis.map(async f => {
-      try {
-        // Passa {} como base — dados do Fundamentus são mesclados abaixo via ??
-        enrichedMap[f.ticker] = await enrichFII(f.ticker, {});
-      } catch (_) {
-        enrichedMap[f.ticker] = {};
-      }
-    }));
+    const proximoMap = {};
+    await Promise.all([
+      ...fiis.map(async f => {
+        try {
+          enrichedMap[f.ticker] = await enrichFII(f.ticker, {});
+        } catch (_) {
+          enrichedMap[f.ticker] = {};
+        }
+      }),
+      ...fiis.map(async f => {
+        proximoMap[f.ticker] = await getProximoRendimento(f.ticker);
+      }),
+    ]);
 
     // Busca perfil do usuário para score personalizado
     let perfilUsuario = null;
@@ -224,6 +229,9 @@ router.get('/portfolio', async (req, res) => {
         perfil: perfilUsuario,
         action: getAction(score),
         consistency: consistMap[f.ticker] ?? db.consistency ?? 0,
+        proximo_dy_valor: proximoMap[f.ticker]?.valor    ?? null,
+        proximo_dy_com:   proximoMap[f.ticker]?.data_com ?? null,
+        proximo_dy_pgto:  proximoMap[f.ticker]?.data_pgto ?? null,
       };
     });
     res.json(result);
