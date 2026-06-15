@@ -20,15 +20,47 @@ app.use('/api/admin',               require('./routes/admin'));
 app.use('/api/activity',            require('./routes/activity'));
 app.use(require('./middleware/errorHandler'));
 
-// ── Health check ──────────────────────────────────────────────────────────────
-const healthPayload = (req, res) => res.json({
-  status:    'ok',
-  service:   'fii-advisor-backend',
-  version:   '1.0.0',
-  timestamp: new Date().toISOString(),
+// ── Health check (rico) ───────────────────────────────────────────────────────
+app.get(['/health', '/api/health'], async (req, res) => {
+  try {
+    const pool = require('./db/connection');
+    const { rows } = await pool.query(`
+      SELECT DISTINCT ON (source)
+        source, status, response_time_ms, checked_at, error_message
+      FROM health_checks
+      ORDER BY source, checked_at DESC
+    `);
+
+    const checks = rows.map(r => ({
+      source:          r.source,
+      status:          r.status,
+      response_time_ms: r.response_time_ms,
+      last_checked:    r.checked_at,
+      error:           r.error_message || null,
+    }));
+
+    const summary = {
+      total: checks.length,
+      ok:    checks.filter(c => c.status === 'ok').length,
+      warn:  checks.filter(c => c.status === 'warn').length,
+      fail:  checks.filter(c => c.status === 'fail').length,
+    };
+
+    const status = summary.fail > 0 ? 'down' : summary.warn > 0 ? 'degraded' : 'ok';
+
+    res.json({ status, timestamp: new Date().toISOString(), checks, summary });
+  } catch (_) {
+    // Banco ainda não tem a tabela ou falhou — resposta mínima
+    res.json({
+      status:    'ok',
+      service:   'fii-advisor-backend',
+      version:   '1.0.0',
+      timestamp: new Date().toISOString(),
+      checks:    [],
+      summary:   { total: 0, ok: 0, warn: 0, fail: 0 },
+    });
+  }
 });
-app.get('/health',     healthPayload);
-app.get('/api/health', healthPayload);
 
 // ── Migrations ────────────────────────────────────────────────────────────────
 async function runMigrations() {
@@ -275,7 +307,25 @@ async function runMigrations() {
        OR financial_score IS NOT NULL
   `);
 
-  // ── Migration 010: Error Logs ─────────────────────────────────────────────
+  // ── Migration 010: Health Checks ─────────────────────────────────────────
+  await run('health_checks_table', `
+    CREATE TABLE IF NOT EXISTS health_checks (
+      id               SERIAL PRIMARY KEY,
+      checked_at       TIMESTAMPTZ DEFAULT NOW(),
+      source           VARCHAR(50)  NOT NULL,
+      status           VARCHAR(10)  NOT NULL CHECK (status IN ('ok','fail','warn')),
+      response_time_ms INTEGER,
+      sample_ticker    VARCHAR(20),
+      error_message    TEXT,
+      fields_returned  JSONB
+    )
+  `);
+  await run('health_checks_idx', `
+    CREATE INDEX IF NOT EXISTS idx_health_checks_source_date
+      ON health_checks (source, checked_at DESC)
+  `);
+
+  // ── Migration 011: Error Logs ─────────────────────────────────────────────
   await run('error_logs_table', `
     CREATE TABLE IF NOT EXISTS error_logs (
       id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -362,6 +412,18 @@ function iniciarScheduler() {
       console.warn('[STARTUP] Varredura inicial falhou:', err.message);
     }
   });
+
+  // Health check diário às 08:30 (Brasília = UTC-3 → '30 11 * * *')
+  const { runHealthChecks } = require('./services/healthCheckService');
+  cron.schedule('30 11 * * *', async () => {
+    console.log('[CRON] Rodando health check das fontes de dados...');
+    try {
+      await runHealthChecks();
+      console.log('[CRON] Health check concluído');
+    } catch (err) {
+      console.error('[CRON] Erro no health check:', err.message);
+    }
+  }, { timezone: 'UTC' });
 
   console.log('[CRON] Scheduler FII iniciado');
 }
