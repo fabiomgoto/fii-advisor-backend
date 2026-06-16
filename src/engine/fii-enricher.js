@@ -300,4 +300,4 @@ async function enrichBatch(tickers, dadosBasePorTicker = {}, delayMs = 2000) {
   return results;
 }
 
-module.exports = { enrichFII, enrichBatch };
+module.exports = { enrichFII, enrichBatch, fetchFundsExplorer, fetchStatusInvest };

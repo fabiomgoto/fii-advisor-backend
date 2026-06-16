@@ -6,7 +6,7 @@ const { calcularScore, calcularScorePerfil, getAction } = require('../engine/fii
 const { buscarFII: buscarFundamentus, buscarTodosFIIs } = require('../collectors/fundamentus');
 const { gerarSintese, gerarSintesePersonalizada } = require('../engine/fii-ai');
 const { getRecommendationConfig, normalizeSegmento } = require('../services/profileScoringService');
-const { enrichFII }   = require('../engine/fii-enricher');
+const { getEnrichedData } = require('../services/dataProvider');
 const { sincronizarProventos } = require('../scheduler/fii-proventos-sync');
 const authMiddleware = require('../middleware/auth');
 
@@ -180,7 +180,7 @@ router.get('/portfolio', async (req, res) => {
     await Promise.all([
       ...fiis.map(async f => {
         try {
-          enrichedMap[f.ticker] = await enrichFII(f.ticker, {});
+          enrichedMap[f.ticker] = await getEnrichedData(f.ticker) || {};
         } catch (_) {
           enrichedMap[f.ticker] = {};
         }
@@ -232,6 +232,7 @@ router.get('/portfolio', async (req, res) => {
         proximo_dy_valor: proximoMap[f.ticker]?.valor    ?? null,
         proximo_dy_com:   proximoMap[f.ticker]?.data_com ?? null,
         proximo_dy_pgto:  proximoMap[f.ticker]?.data_pgto ?? null,
+        data_quality: enrich._stale ? 'stale' : 'fresh',
       };
     });
     res.json(result);
@@ -938,8 +939,7 @@ async function rodarVarredura() {
   // 2. Enriquecimento com Funds Explorer (max 5 simultâneos, cache 24h)
   const enriched = await limitConcurrency(pre, async (fii) => {
     try {
-      // Passa {} como base para não contaminar o cache com dados do Fundamentus
-      const extra = await enrichFII(fii.ticker, {});
+      const extra = await getEnrichedData(fii.ticker) || {};
 
       // Usa ?? (nullish coalescing) igual à rota /portfolio:
       // se Funds Explorer retornar null (ex: vacancy em fundo de papel), preserva o dado do Fundamentus
@@ -958,12 +958,12 @@ async function rodarVarredura() {
         ultimo_dy_com:   extra.ultimo_dy_com   ?? null,
         ultimo_dy_pgto:  extra.ultimo_dy_pgto  ?? null,
         descricao:       extra.descricao       ?? null,
-        source: extra.source ?? 'fundamentus',
+        source: extra._source ?? extra.source ?? 'enricher',
+        data_quality: extra._stale ? 'stale' : 'fresh',
       };
 
       const score = calcularScore(dadosCompletos);
 
-      // Log de diagnóstico para comparação (pode remover após estabilizar)
       console.log(`[score] ${fii.ticker}: dy=${dadosCompletos.dy_12m} pvp=${dadosCompletos.pvp} vac=${dadosCompletos.vacancy} props=${dadosCompletos.properties} divg=${dadosCompletos.div_growth} liq=${dadosCompletos.liquidity} → ${score}pts`);
 
       return { ...dadosCompletos, score, action: getAction(score) };
@@ -1214,7 +1214,7 @@ router.get('/score/diagnostico', async (req, res) => {
     let enriched = {};
     let enrichSource = 'null';
     try {
-      const r = await enrichFII(ticker, {});
+      const r = await getEnrichedData(ticker) || {};
       enriched = {
         pvp:        r.pvp        ?? null,
         dy_12m:     r.dy_12m     ?? null,
@@ -1223,8 +1223,9 @@ router.get('/score/diagnostico', async (req, res) => {
         div_growth: r.div_growth ?? null,
         wault:      r.wault      ?? null,
         leverage:   r.leverage   ?? null,
+        data_quality: r._stale ? 'stale' : 'fresh',
       };
-      enrichSource = r.source || 'enricher';
+      enrichSource = r._source ?? r.source ?? 'enricher';
     } catch (e) {
       enrichSource = `enricher_erro:${e.message.substring(0, 40)}`;
     }

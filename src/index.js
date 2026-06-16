@@ -24,19 +24,24 @@ app.use(require('./middleware/errorHandler'));
 app.get(['/health', '/api/health'], async (req, res) => {
   try {
     const pool = require('./db/connection');
-    const { rows } = await pool.query(`
-      SELECT DISTINCT ON (source)
-        source, status, response_time_ms, checked_at, error_message
-      FROM health_checks
-      ORDER BY source, checked_at DESC
-    `);
+    const { getSourceStatus } = require('./services/dataProvider');
+
+    const [{ rows }, scrapingSources] = await Promise.all([
+      pool.query(`
+        SELECT DISTINCT ON (source)
+          source, status, response_time_ms, checked_at, error_message
+        FROM health_checks
+        ORDER BY source, checked_at DESC
+      `),
+      getSourceStatus(),
+    ]);
 
     const checks = rows.map(r => ({
-      source:          r.source,
-      status:          r.status,
+      source:           r.source,
+      status:           r.status,
       response_time_ms: r.response_time_ms,
-      last_checked:    r.checked_at,
-      error:           r.error_message || null,
+      last_checked:     r.checked_at,
+      error:            r.error_message || null,
     }));
 
     const summary = {
@@ -48,9 +53,8 @@ app.get(['/health', '/api/health'], async (req, res) => {
 
     const status = summary.fail > 0 ? 'down' : summary.warn > 0 ? 'degraded' : 'ok';
 
-    res.json({ status, timestamp: new Date().toISOString(), checks, summary });
+    res.json({ status, timestamp: new Date().toISOString(), checks, summary, scraping_sources: scrapingSources });
   } catch (_) {
-    // Banco ainda não tem a tabela ou falhou — resposta mínima
     res.json({
       status:    'ok',
       service:   'fii-advisor-backend',
@@ -58,6 +62,7 @@ app.get(['/health', '/api/health'], async (req, res) => {
       timestamp: new Date().toISOString(),
       checks:    [],
       summary:   { total: 0, ok: 0, warn: 0, fail: 0 },
+      scraping_sources: [],
     });
   }
 });
@@ -305,6 +310,35 @@ async function runMigrations() {
        OR financial_wizard_done IS TRUE
        OR investor_score_v2 IS NOT NULL
        OR financial_score IS NOT NULL
+  `);
+
+  // ── Migration 009b: DataProvider — evolução fii_enriched_cache ──────────
+  await run('enriched_cache_source_col', `
+    ALTER TABLE fii_enriched_cache
+      ADD COLUMN IF NOT EXISTS source       VARCHAR(50),
+      ADD COLUMN IF NOT EXISTS is_stale     BOOLEAN      DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS stale_since  TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS versioned_at TIMESTAMPTZ  DEFAULT NOW()
+  `);
+  await run('enriched_cache_versioned_idx', `
+    CREATE INDEX IF NOT EXISTS idx_enriched_ticker_versioned
+      ON fii_enriched_cache (ticker, versioned_at DESC)
+  `);
+  await run('scraping_source_status', `
+    CREATE TABLE IF NOT EXISTS scraping_source_status (
+      source           VARCHAR(50) PRIMARY KEY,
+      is_active        BOOLEAN     DEFAULT TRUE,
+      fail_count       INTEGER     DEFAULT 0,
+      last_fail_at     TIMESTAMPTZ,
+      disabled_until   TIMESTAMPTZ,
+      last_success_at  TIMESTAMPTZ,
+      updated_at       TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await run('scraping_source_status_seed', `
+    INSERT INTO scraping_source_status (source) VALUES
+      ('funds_explorer'), ('status_invest'), ('fundamentus')
+    ON CONFLICT (source) DO NOTHING
   `);
 
   // ── Migration 010: Health Checks ─────────────────────────────────────────
