@@ -31,7 +31,7 @@ async function buscarDadosBrapiBasico(ticker) {
 }
 
 async function buscarLoteFIIs(tickers) {
-  const { enrichFII } = require('../engine/fii-enricher');
+  const { getEnrichedData } = require('../services/dataProvider');
 
   const resultados = [];
   for (const ticker of tickers) {
@@ -47,7 +47,7 @@ async function buscarLoteFIIs(tickers) {
 
     // 2. enricher (pvp, dy_12m, vacancy, properties, div_growth — sempre)
     try {
-      const enriched = await enrichFII(ticker, {});
+      const enriched = await getEnrichedData(ticker) || {};
       dado = {
         ...dado,
         pvp:        enriched.pvp        ?? dado.pvp        ?? null,
