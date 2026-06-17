@@ -312,6 +312,26 @@ async function runMigrations() {
        OR financial_score IS NOT NULL
   `);
 
+  // ── Migration 009a: Portfolio Snapshots ──────────────────────────────────
+  await run('portfolio_snapshots_table', `
+    CREATE TABLE IF NOT EXISTS portfolio_snapshots (
+      id              SERIAL PRIMARY KEY,
+      user_id         UUID         NOT NULL,
+      snapshot_date   DATE         NOT NULL DEFAULT CURRENT_DATE,
+      valor_atual     NUMERIC(14,2) NOT NULL,
+      total_investido NUMERIC(14,2) NOT NULL,
+      variacao_dia    NUMERIC(14,2),
+      variacao_pct    NUMERIC(6,4),
+      detalhes        JSONB,
+      created_at      TIMESTAMPTZ  DEFAULT NOW(),
+      UNIQUE (user_id, snapshot_date)
+    )
+  `);
+  await run('portfolio_snapshots_idx', `
+    CREATE INDEX IF NOT EXISTS idx_snapshots_user_date
+      ON portfolio_snapshots (user_id, snapshot_date DESC)
+  `);
+
   // ── Migration 009b: DataProvider — evolução fii_enriched_cache ──────────
   await run('enriched_cache_source_col', `
     ALTER TABLE fii_enriched_cache
@@ -433,6 +453,18 @@ function iniciarScheduler() {
       console.log('[CRON] Varredura concluída');
     } catch (err) {
       console.error('[CRON] Erro varredura:', err.message);
+    }
+  }, { timezone: 'America/Sao_Paulo' });
+
+  // Snapshots de carteira: logo após varredura das 07h (07h30, dias úteis)
+  const { runPortfolioSnapshots } = require('./services/portfolioSnapshotService');
+  cron.schedule('30 7 * * 1-5', async () => {
+    console.log('[CRON] Gerando snapshots de carteira...');
+    try {
+      await runPortfolioSnapshots();
+      console.log('[CRON] Snapshots de carteira gerados');
+    } catch (err) {
+      console.error('[CRON] Erro snapshots:', err.message);
     }
   }, { timezone: 'America/Sao_Paulo' });
 

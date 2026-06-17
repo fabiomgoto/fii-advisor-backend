@@ -557,6 +557,74 @@ router.get('/rentabilidade', async (req, res) => {
   }
 });
 
+// ─── SNAPSHOTS ───────────────────────────────────────────────────────────────
+
+// GET /api/fiis/portfolio/snapshots — histórico diário de valor da carteira
+router.get('/portfolio/snapshots', async (req, res) => {
+  try {
+    const userId = req.userId;
+    const days   = Math.min(parseInt(req.query.days) || 30, 365);
+
+    const { rows } = await pool.query(
+      `SELECT
+         snapshot_date   AS data,
+         valor_atual,
+         total_investido,
+         variacao_dia,
+         variacao_pct
+       FROM portfolio_snapshots
+       WHERE user_id = $1
+         AND snapshot_date >= CURRENT_DATE - ($2 * INTERVAL '1 day')
+       ORDER BY snapshot_date ASC`,
+      [userId, days]
+    );
+
+    if (!rows.length) return res.json({ snapshots: [], resumo: null });
+
+    const ultimo = rows[rows.length - 1];
+    const primeiro = rows[0];
+    const variacao_total = parseFloat(ultimo.valor_atual) - parseFloat(primeiro.total_investido);
+    const variacao_total_pct = parseFloat(primeiro.total_investido) > 0
+      ? variacao_total / parseFloat(primeiro.total_investido)
+      : null;
+
+    const maior_alta  = rows.reduce((best, r) => {
+      const v = parseFloat(r.variacao_pct ?? -Infinity);
+      return v > parseFloat(best?.variacao_pct ?? -Infinity) ? r : best;
+    }, null);
+    const maior_baixa = rows.reduce((worst, r) => {
+      const v = parseFloat(r.variacao_pct ?? Infinity);
+      return v < parseFloat(worst?.variacao_pct ?? Infinity) ? r : worst;
+    }, null);
+
+    const fmt = (r) => r ? {
+      data:         r.data,
+      valor:        parseFloat(r.valor_atual),
+      variacao_pct: parseFloat(r.variacao_pct),
+    } : null;
+
+    res.json({
+      snapshots: rows.map(r => ({
+        data:            r.data,
+        valor_atual:     parseFloat(r.valor_atual),
+        total_investido: parseFloat(r.total_investido),
+        variacao_dia:    r.variacao_dia   != null ? parseFloat(r.variacao_dia)  : null,
+        variacao_pct:    r.variacao_pct   != null ? parseFloat(r.variacao_pct)  : null,
+      })),
+      resumo: {
+        valor_atual:        parseFloat(ultimo.valor_atual),
+        total_investido:    parseFloat(ultimo.total_investido),
+        variacao_total:     Math.round(variacao_total * 100) / 100,
+        variacao_total_pct: variacao_total_pct != null ? Math.round(variacao_total_pct * 10000) / 10000 : null,
+        maior_alta:  fmt(maior_alta),
+        maior_baixa: fmt(maior_baixa),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── PROVENTOS ───────────────────────────────────────────────────────────────
 
 // GET /api/fiis/proventos/resumo — totais e médias (antes de :ticker para não conflitar)
