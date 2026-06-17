@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const axios = require('axios');
+const axios = require('../services/axiosConfig');
 const pool = require('../db/connection');
 const { calcularScore, calcularScorePerfil, getAction } = require('../engine/fii-scorer');
 const { buscarFII: buscarFundamentus, buscarTodosFIIs } = require('../collectors/fundamentus');
@@ -9,6 +9,8 @@ const { getRecommendationConfig, normalizeSegmento } = require('../services/prof
 const { getEnrichedData } = require('../services/dataProvider');
 const { sincronizarProventos } = require('../scheduler/fii-proventos-sync');
 const authMiddleware = require('../middleware/auth');
+const { scanLimiter, diagnosticoLimiter, importLimiter } = require('../middleware/rateLimiter');
+const { validateTicker, validateTickerList } = require('../middleware/validateTicker');
 
 // Rotas protegidas — exigem JWT válido do Supabase
 // /market, /search, /top10, /top50 são públicas (dados de mercado)
@@ -104,7 +106,7 @@ router.get('/market', async (req, res) => {
 });
 
 // POST /api/fiis/market/scan — força varredura manual (atualiza fiis_market agora)
-router.post('/market/scan', async (req, res) => {
+router.post('/market/scan', scanLimiter, async (req, res) => {
   try {
     const { rodarFIIScanner } = require('../scheduler/fii-scanner');
     rodarFIIScanner()
@@ -244,7 +246,11 @@ router.get('/portfolio', async (req, res) => {
 // POST /api/fiis/portfolio — adicionar FII
 router.post('/portfolio', async (req, res) => {
   const { ticker, name, segment } = req.body;
-  if (!ticker) return res.status(400).json({ error: 'ticker obrigatório' });
+  const TICKER_RE = /^[A-Z]{4}\d{1,2}F?$/;
+  const tickerNorm = (ticker || '').toUpperCase().trim();
+  if (!tickerNorm || !TICKER_RE.test(tickerNorm)) {
+    return res.status(400).json({ error: 'Ticker inválido. Formato: 4 letras + 2 números (ex: HGLG11)' });
+  }
   const userId = getUserId(req);
   try {
     const { rows } = await pool.query(
@@ -264,7 +270,7 @@ router.post('/portfolio', async (req, res) => {
 });
 
 // POST /api/fiis/portfolio/:ticker/sell — declarar venda (mantém histórico de proventos)
-router.post('/portfolio/:ticker/sell', async (req, res) => {
+router.post('/portfolio/:ticker/sell', validateTicker, async (req, res) => {
   const userId = getUserId(req);
   const ticker = req.params.ticker.toUpperCase();
   const { sold_at, sold_price, sold_quantity } = req.body;
@@ -283,7 +289,7 @@ router.post('/portfolio/:ticker/sell', async (req, res) => {
 });
 
 // DELETE /api/fiis/portfolio/:ticker/sell — desfazer venda declarada
-router.delete('/portfolio/:ticker/sell', async (req, res) => {
+router.delete('/portfolio/:ticker/sell', validateTicker, async (req, res) => {
   const userId = getUserId(req);
   const ticker = req.params.ticker.toUpperCase();
   try {
@@ -299,7 +305,7 @@ router.delete('/portfolio/:ticker/sell', async (req, res) => {
 });
 
 // DELETE /api/fiis/portfolio/:ticker — remover FII da carteira
-router.delete('/portfolio/:ticker', async (req, res) => {
+router.delete('/portfolio/:ticker', validateTicker, async (req, res) => {
   const userId = getUserId(req);
   const ticker = req.params.ticker.toUpperCase();
   try {
@@ -313,7 +319,7 @@ router.delete('/portfolio/:ticker', async (req, res) => {
 });
 
 // GET /api/fiis/contributions/:ticker — histórico de aportes
-router.get('/contributions/:ticker', async (req, res) => {
+router.get('/contributions/:ticker', validateTicker, async (req, res) => {
   const userId = getUserId(req);
   try {
     const { rows } = await pool.query(
@@ -443,7 +449,7 @@ router.delete('/dividends/:id', async (req, res) => {
 });
 
 // GET /api/fiis/dividends/:ticker — histórico dividendos
-router.get('/dividends/:ticker', async (req, res) => {
+router.get('/dividends/:ticker', validateTicker, async (req, res) => {
   const userId = getUserId(req);
   try {
     const { rows } = await pool.query(
@@ -457,7 +463,7 @@ router.get('/dividends/:ticker', async (req, res) => {
 });
 
 // GET /api/fiis/rentabilidade/:ticker — rentabilidade mês a mês
-router.get('/rentabilidade/:ticker', async (req, res) => {
+router.get('/rentabilidade/:ticker', validateTicker, async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
   const userId = getUserId(req);
   try {
@@ -730,7 +736,7 @@ router.get('/proventos', async (req, res) => {
 });
 
 // GET /api/fiis/proventos/:ticker — histórico de um ticker
-router.get('/proventos/:ticker', async (req, res) => {
+router.get('/proventos/:ticker', validateTicker, async (req, res) => {
   const userId = getUserId(req);
   const ticker = req.params.ticker.toUpperCase();
   try {
@@ -760,7 +766,7 @@ router.post('/proventos/sync', async (req, res) => {
 });
 
 // POST /api/fiis/dividends/import-brapi/:ticker — importa 1 ticker via StatusInvest
-router.post('/dividends/import-brapi/:ticker', async (req, res) => {
+router.post('/dividends/import-brapi/:ticker', importLimiter, validateTicker, async (req, res) => {
   const userId = getUserId(req);
   const ticker = req.params.ticker.toUpperCase();
 
@@ -837,7 +843,7 @@ router.post('/dividends/import-brapi/:ticker', async (req, res) => {
 });
 
 // POST /api/fiis/dividends/import-brapi — importa histórico de dividendos via StatusInvest
-router.post('/dividends/import-brapi', async (req, res) => {
+router.post('/dividends/import-brapi', importLimiter, async (req, res) => {
   const userId = getUserId(req);
 
   // Helper: converte "DD/MM/YYYY" → "YYYY-MM-DD"
@@ -1209,7 +1215,7 @@ router.get('/top10', async (req, res) => {
 });
 
 // POST /api/fiis/top10/scan — força nova varredura (ignora cache)
-router.post('/top10/scan', async (req, res) => {
+router.post('/top10/scan', scanLimiter, async (req, res) => {
   try {
     top10Cache = null;
     const result = await rodarVarredura();
@@ -1249,9 +1255,8 @@ router.post('/enriched-cache/clear', async (req, res) => {
 
 // GET /api/fiis/score/diagnostico?tickers=HGLG11,RZTR11,...
 // Diagnóstico completo: campos recebidos, fontes e pontuação parcial por critério
-router.get('/score/diagnostico', async (req, res) => {
-  const tickers = (req.query.tickers || 'HGLG11,RZTR11,SNCI11,SNAG11,RZAK11,KNCR11')
-    .split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+router.get('/score/diagnostico', authMiddleware, diagnosticoLimiter, validateTickerList, async (req, res) => {
+  const tickers = req.validatedTickers || ['HGLG11', 'RZTR11', 'SNCI11', 'SNAG11', 'RZAK11', 'KNCR11'];
 
   const resultados = [];
 
@@ -1482,7 +1487,7 @@ async function getStatusInvestData(ticker) {
 }
 
 // GET /api/fiis/:ticker/detail?range=1mo|3mo
-router.get('/:ticker/detail', async (req, res) => {
+router.get('/:ticker/detail', validateTicker, async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
   const range  = ['1mo', '3mo'].includes(req.query.range) ? req.query.range : '1mo';
   try {

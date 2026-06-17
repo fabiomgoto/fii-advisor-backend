@@ -1,14 +1,29 @@
 require('dotenv').config();
 const express = require('express');
 const cors    = require('cors');
+const helmet  = require('helmet');
+const { generalLimiter } = require('./middleware/rateLimiter');
 
 const app  = express();
 const PORT = process.env.PORT || 3002;
 
 // ── Middlewares ───────────────────────────────────────────────────────────────
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc:  ["'self'"],
+      styleSrc:   ["'self'", "'unsafe-inline'"],
+      imgSrc:     ["'self'", 'data:', 'https:'],
+      connectSrc: ["'self'", 'https://brapi.dev', 'https://statusinvest.com.br'],
+    },
+  },
+  crossOriginEmbedderPolicy: false,
+}));
 app.use(cors({ origin: true, methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'] }));
 app.options('*', cors({ origin: true }));
 app.use(express.json());
+app.use(generalLimiter);
 
 // ── Rotas ─────────────────────────────────────────────────────────────────────
 app.use('/api/fiis',                require('./routes/fiis'));

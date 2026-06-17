@@ -11,7 +11,7 @@
  * Cache: tabela PostgreSQL fii_enriched_cache (TTL 24h)
  */
 
-const axios = require('axios');
+const axios = require('../services/axiosConfig');
 const pool  = require('../db/connection');
 
 const CACHE_TTL_H = 24;

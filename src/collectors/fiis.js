@@ -5,7 +5,7 @@
  * Complemento:   enrichFII → FundsExplorer + StatusInvest (pvp, vacancy, etc.)
  */
 
-const axios = require('axios');
+const axios = require('../services/axiosConfig');
 
 const BRAPI_TOKEN = process.env.BRAPI_TOKEN;
 const BASE_URL    = 'https://brapi.dev/api';
