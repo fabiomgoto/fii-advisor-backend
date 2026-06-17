@@ -231,9 +231,10 @@ router.get('/portfolio', async (req, res) => {
         perfil: perfilUsuario,
         action: getAction(score),
         consistency: consistMap[f.ticker] ?? db.consistency ?? 0,
-        proximo_dy_valor: proximoMap[f.ticker]?.valor    ?? null,
-        proximo_dy_com:   proximoMap[f.ticker]?.data_com ?? null,
-        proximo_dy_pgto:  proximoMap[f.ticker]?.data_pgto ?? null,
+        proximo_dy_valor:  proximoMap[f.ticker]?.valor    ?? null,
+        proximo_dy_com:    proximoMap[f.ticker]?.data_com ?? null,
+        proximo_dy_pgto:   proximoMap[f.ticker]?.data_pgto ?? null,
+        proximo_dy_recente: proximoMap[f.ticker]?.recente ?? false,
         data_quality: enrich._stale ? 'stale' : 'fresh',
       };
     });
@@ -1445,7 +1446,10 @@ let _siCache = null;
 let _siCacheTs = 0;
 const SI_TTL = 6 * 60 * 60 * 1000;
 
-// Busca próximo rendimento declarado (data COM futura) via SI provents
+// Busca próximo rendimento declarado via SI provents.
+// Prioridade 1: pagamento futuro mais próximo.
+// Prioridade 2: pagamento mais recente nos últimos 35 dias (fundo pagou este mês
+// mas ainda não declarou o próximo — evita o card ficar vazio até o dia da declaração).
 async function getProximoRendimento(ticker) {
   try {
     function parseDateBR(s) {
@@ -1453,21 +1457,28 @@ async function getProximoRendimento(ticker) {
       const [d, m, y] = s.split('/');
       return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
     }
-    const hoje = new Date().toISOString().substring(0, 10);
-    // startDate 45 dias atrás: captura COMs já passados mas pagamento ainda pendente
-    const inicio = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
+    const hoje   = new Date().toISOString().substring(0, 10);
+    const inicio = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
     const futuro = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
     const { data } = await axios.get(
       `https://statusinvest.com.br/fii/companytickerprovents?ticker=${ticker}&type=1&datetype=3&startDate=${inicio}&endDate=${futuro}`,
       { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': `https://statusinvest.com.br/fundos-imobiliarios/${ticker.toLowerCase()}`, 'Accept': 'application/json' } }
     );
-    const list = data?.assetEarningsModels || [];
-    // Filtra por data de PAGAMENTO >= hoje (COM pode já ter passado, mas pgto ainda não)
-    const pendentes = list
+    const list = (data?.assetEarningsModels || [])
       .map(p => ({ valor: parseFloat(p.v || 0), data_com: parseDateBR(p.ed), data_pgto: parseDateBR(p.pd) }))
-      .filter(p => p.data_pgto && p.data_pgto >= hoje)
-      .sort((a, b) => a.data_pgto.localeCompare(b.data_pgto));
-    return pendentes[0] || null;
+      .filter(p => p.data_pgto);
+
+    if (!list.length) return null;
+
+    const futuros = list.filter(p => p.data_pgto >= hoje)
+                        .sort((a, b) => a.data_pgto.localeCompare(b.data_pgto));
+    if (futuros.length) return { ...futuros[0], recente: false };
+
+    const recentes = list.filter(p => p.data_pgto < hoje)
+                         .sort((a, b) => b.data_pgto.localeCompare(a.data_pgto));
+    if (recentes.length) return { ...recentes[0], recente: true };
+
+    return null;
   } catch (_) { return null; }
 }
 
@@ -1584,9 +1595,10 @@ router.get('/:ticker/detail', validateTicker, async (req, res) => {
       ultimo_dy_pgto:  enriched?.ultimo_dy_pgto ?? null,
 
       // Próximo rendimento declarado
-      proximo_dy_valor: proximo?.valor    ?? null,
-      proximo_dy_com:   proximo?.data_com ?? null,
-      proximo_dy_pgto:  proximo?.data_pgto ?? null,
+      proximo_dy_valor:  proximo?.valor    ?? null,
+      proximo_dy_com:    proximo?.data_com ?? null,
+      proximo_dy_pgto:   proximo?.data_pgto ?? null,
+      proximo_dy_recente: proximo?.recente ?? false,
 
       // Descrição
       descricao: enriched?.descricao ?? null,
