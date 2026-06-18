@@ -187,7 +187,7 @@ router.get('/portfolio', async (req, res) => {
         div_growth: enrich.div_growth ?? null,
         segment:    live.segment    ?? f.segment     ?? null,
       };
-      const score       = calcularScore(dados);
+      const { score }   = calcularScore(dados);
       const scorePerfil = perfilUsuario ? calcularScorePerfil(dados, perfilUsuario) : null;
       return {
         ...f,
@@ -893,7 +893,7 @@ async function rodarVarredura() {
   // 1. Filtros básicos e pré-score com dados do Fundamentus
   const pre = Object.entries(todos)
     .filter(([ticker, d]) => aplicarFiltros(ticker, d))
-    .map(([ticker, d]) => ({ ticker, ...d, score: calcularScore(d) }))
+    .map(([ticker, d]) => { const { score } = calcularScore(d); return { ticker, ...d, score }; })
     .sort((a, b) => b.score - a.score)
     .slice(0, 100); // enriquece os 100 melhores candidatos
 
@@ -925,7 +925,7 @@ async function rodarVarredura() {
         data_quality: extra._stale ? 'stale' : 'fresh',
       };
 
-      const score = calcularScore(dadosCompletos);
+      const { score } = calcularScore(dadosCompletos);
 
       console.log(`[score] ${fii.ticker}: dy=${dadosCompletos.dy_12m} pvp=${dadosCompletos.pvp} vac=${dadosCompletos.vacancy} props=${dadosCompletos.properties} divg=${dadosCompletos.div_growth} liq=${dadosCompletos.liquidity} → ${score}pts`);
 
