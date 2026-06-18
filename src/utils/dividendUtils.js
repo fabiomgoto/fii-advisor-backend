@@ -54,4 +54,28 @@ function brapiDividsToDB(cashDividends = []) {
     .filter(d => d.exDate && d.rate > 0);
 }
 
-module.exports = { calcularDY12m, extrairProximoRendimento, brapiDividsToDB };
+/**
+ * Calcula crescimento de DY: média mensal dos últimos 6 meses vs 6 meses anteriores.
+ * Retorna decimal (ex: 0.069 = +6.9%) ou null se não houver dados suficientes.
+ */
+function calcularDivGrowth(cashDividends = []) {
+  const hoje  = new Date();
+  const m6    = new Date(hoje); m6.setMonth(m6.getMonth() - 6);
+  const m12   = new Date(hoje); m12.setFullYear(m12.getFullYear() - 1);
+
+  const ultimos6   = cashDividends.filter(d => new Date(d.paymentDate) >= m6);
+  const anteriores6 = cashDividends.filter(d => {
+    const dt = new Date(d.paymentDate);
+    return dt >= m12 && dt < m6;
+  });
+
+  if (!ultimos6.length || !anteriores6.length) return null;
+
+  const mediaRecente   = ultimos6.reduce((s, d)   => s + d.rate, 0) / ultimos6.length;
+  const mediaAnterior  = anteriores6.reduce((s, d) => s + d.rate, 0) / anteriores6.length;
+
+  if (mediaAnterior === 0) return null;
+  return (mediaRecente - mediaAnterior) / mediaAnterior;
+}
+
+module.exports = { calcularDY12m, calcularDivGrowth, extrairProximoRendimento, brapiDividsToDB };

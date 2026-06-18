@@ -28,66 +28,31 @@ function getUserId(req) {
 }
 
 async function fetchPrecos(tickers) {
-  const agora   = Date.now();
+  const agora    = Date.now();
   const precisam = tickers.filter(t => !PRICE_CACHE[t] || agora - PRICE_CACHE[t].ts > CACHE_TTL_MS);
 
   if (precisam.length > 0) {
-    await Promise.all(precisam.map(async (ticker) => {
-      let dado = null;
-
-      // 1ª opção: brapi — preço intraday sempre atualizado
-      try {
-        const { data } = await axios.get(
-          `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}`,
-          { timeout: 8000 }
-        );
-        const q = data?.results?.[0];
-        if (q?.regularMarketPrice) dado = {
-          price:  q.regularMarketPrice ?? null,
-          dy_12m: q.dividendYield      ?? null,
-          pvp:    q.priceToBook        ?? null,
-        };
-      } catch (_) {}
-
-      // 2ª opção: Fundamentus (price + DY + PVP — pode ser cacheado até 6h)
-      if (!dado) {
-        try {
-          const fund = await buscarFundamentus(ticker);
-          if (fund?.price) dado = { ...fund };
-        } catch (_) {}
-      }
-
-      if (!dado) {
-        try {
-          // 3ª opção: mfinance
-          const { data } = await axios.get(
-            `https://mfinance.com.br/api/v1/fiis/${ticker}`,
-            { timeout: 8000 }
-          );
-          dado = {
-            price:   data.lastPrice ?? data.closingPrice ?? null,
-            dy_12m:  data.dividendYield ?? null,
-            segment: data.segment ?? null,
-          };
-        } catch (_) {}
-      }
-
-      if (dado?.price) {
-        PRICE_CACHE[ticker] = { ...dado, ts: agora };
-        // Persiste preço no fiis_market para não perder entre restarts
+    // Brapi Pro em lote: price + pvp + dy_12m + div_growth em uma chamada só
+    try {
+      const { buscarLoteBrapi } = require('../collectors/fiis');
+      const brapiMap = await buscarLoteBrapi(precisam);
+      for (const [ticker, d] of Object.entries(brapiMap)) {
+        if (!d.price) continue;
+        PRICE_CACHE[ticker] = { ...d, ts: agora };
         pool.query(
-          `INSERT INTO fiis_market (ticker, price, dy_12m, pvp, segment, scanned_at)
-           VALUES ($1,$2,$3,$4,$5,NOW())
+          `INSERT INTO fiis_market (ticker, price, dy_12m, pvp, scanned_at)
+           VALUES ($1,$2,$3,$4,NOW())
            ON CONFLICT (ticker) DO UPDATE SET
              price=COALESCE(EXCLUDED.price, fiis_market.price),
              dy_12m=COALESCE(EXCLUDED.dy_12m, fiis_market.dy_12m),
              pvp=COALESCE(EXCLUDED.pvp, fiis_market.pvp),
-             segment=COALESCE(EXCLUDED.segment, fiis_market.segment),
              scanned_at=NOW()`,
-          [ticker, dado.price, dado.dy_12m ?? null, dado.pvp ?? null, dado.segment ?? null]
+          [ticker, d.price, d.dy_12m ?? null, d.pvp ?? null]
         ).catch(e => console.warn(`[fiis/prices] upsert ${ticker}:`, e.message));
       }
-    }));
+    } catch (err) {
+      console.warn('[fiis/prices] brapi batch:', err.message);
+    }
   }
 
   return Object.fromEntries(tickers.map(t => [t, PRICE_CACHE[t] || {}]));
