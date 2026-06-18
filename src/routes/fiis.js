@@ -893,7 +893,7 @@ async function rodarVarredura() {
   // 1. Filtros básicos e pré-score com dados do Fundamentus
   const pre = Object.entries(todos)
     .filter(([ticker, d]) => aplicarFiltros(ticker, d))
-    .map(([ticker, d]) => { const { score } = calcularScore(d); return { ticker, ...d, score }; })
+    .map(([ticker, d]) => { const { score, segmento } = calcularScore(d); return { ticker, ...d, score, segmento }; })
     .sort((a, b) => b.score - a.score)
     .slice(0, 100); // enriquece os 100 melhores candidatos
 
@@ -925,11 +925,11 @@ async function rodarVarredura() {
         data_quality: extra._stale ? 'stale' : 'fresh',
       };
 
-      const { score } = calcularScore(dadosCompletos);
+      const { score, segmento, cobertura_pct, score_breakdown } = calcularScore(dadosCompletos);
 
       console.log(`[score] ${fii.ticker}: dy=${dadosCompletos.dy_12m} pvp=${dadosCompletos.pvp} vac=${dadosCompletos.vacancy} props=${dadosCompletos.properties} divg=${dadosCompletos.div_growth} liq=${dadosCompletos.liquidity} → ${score}pts`);
 
-      return { ...dadosCompletos, score, action: getAction(score) };
+      return { ...dadosCompletos, score, segmento, cobertura_pct, score_breakdown, action: getAction(score) };
     } catch (err) {
       console.warn(`[score] ${fii.ticker} enrich erro:`, err.message);
       return { ...fii, action: getAction(fii.score) };
