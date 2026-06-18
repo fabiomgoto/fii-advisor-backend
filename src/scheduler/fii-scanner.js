@@ -16,7 +16,6 @@ const FIIS_BASE = [
 async function rodarFIIScanner() {
   console.log('[fii-scanner] Iniciando varredura...');
 
-  // Remove tickers extintos/blacklistados do banco (caso estejam presentes)
   try {
     const blackArr = [...BLACKLIST];
     await pool.query('DELETE FROM fiis_market WHERE ticker = ANY($1)', [blackArr]);
@@ -24,7 +23,6 @@ async function rodarFIIScanner() {
     console.warn('[fii-scanner] Erro ao purgar blacklist:', e.message);
   }
 
-  // Inclui todos os tickers ativos nas carteiras dos usuários
   let tickersUsuarios = [];
   try {
     const { rows } = await pool.query(
@@ -42,28 +40,38 @@ async function rodarFIIScanner() {
 
   for (const fii of dados) {
     if (BLACKLIST.has(fii.ticker)) continue;
-    const score  = calcularScore(fii);
+
+    // Scoring segmentado imediato (Sprint 16)
+    const { score, segmento, cobertura_pct, score_breakdown } = calcularScore(fii);
     const action = getAction(score);
+
     await pool.query(
       `INSERT INTO fiis_market
-         (ticker, name, price, dy_12m, pvp, liquidity, net_worth, score, action, segment, vacancy, properties, scanned_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NOW())
+         (ticker, name, price, dy_12m, pvp, liquidity, net_worth, score, action,
+          segment, vacancy, properties, segmento, cobertura_pct, score_breakdown, score_updated_at, scanned_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW())
        ON CONFLICT (ticker) DO UPDATE SET
          name=EXCLUDED.name, price=EXCLUDED.price, dy_12m=EXCLUDED.dy_12m,
          pvp=EXCLUDED.pvp, liquidity=EXCLUDED.liquidity, net_worth=EXCLUDED.net_worth,
          score=EXCLUDED.score, action=EXCLUDED.action, segment=EXCLUDED.segment,
-         vacancy=EXCLUDED.vacancy, properties=EXCLUDED.properties, scanned_at=NOW()`,
+         vacancy=EXCLUDED.vacancy, properties=EXCLUDED.properties,
+         segmento=EXCLUDED.segmento, cobertura_pct=EXCLUDED.cobertura_pct,
+         score_breakdown=EXCLUDED.score_breakdown, score_updated_at=NOW(), scanned_at=NOW()`,
       [
         fii.ticker, fii.name, fii.price, fii.dy_12m, fii.pvp,
         fii.liquidity, fii.net_worth, score, action,
         fii.segment ?? null, fii.vacancy ?? null, fii.properties ?? null,
+        segmento, cobertura_pct, JSON.stringify(score_breakdown),
       ]
     );
   }
 
   // Síntese IA do Top 10
   const top10 = dados
-    .map(f => ({ ...f, score: calcularScore(f), action: getAction(calcularScore(f)) }))
+    .map(f => {
+      const { score, segmento } = calcularScore(f);
+      return { ...f, score, segmento, action: getAction(score) };
+    })
     .sort((a, b) => b.score - a.score)
     .slice(0, 10);
 
