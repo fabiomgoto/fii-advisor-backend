@@ -459,6 +459,17 @@ function iniciarScheduler() {
     }
   }, { timezone: 'America/Sao_Paulo' });
 
+  // Scoring segmentado diário: dias úteis às 18h30, após atualização de preços
+  const { rodarScoringDiario } = require('./scheduler/fii-daily-scorer');
+  cron.schedule('30 18 * * 1-5', async () => {
+    console.log('[CRON] Scoring diário segmentado...');
+    try {
+      await rodarScoringDiario();
+    } catch (err) {
+      console.error('[CRON] Erro scoring diário:', err.message);
+    }
+  }, { timezone: 'America/Sao_Paulo' });
+
   // Varredura de mercado (popula fiis_market para recomendações): dias úteis às 7h
   const { rodarFIIScanner } = require('./scheduler/fii-scanner');
   cron.schedule('0 7 * * 1-5', async () => {

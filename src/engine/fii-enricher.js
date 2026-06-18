@@ -160,7 +160,20 @@ async function fetchStatusInvest(ticker) {
   }
 }
 
-// ─── Fonte 3: brapi (div_growth e descricao) ─────────────────────────────────
+// ─── Fonte 3: brapi (div_growth, consistency e descricao) ────────────────────
+
+function calcConsistency(dividends) {
+  if (!Array.isArray(dividends) || !dividends.length) return null;
+  const cutoff = new Date();
+  cutoff.setFullYear(cutoff.getFullYear() - 1);
+  const meses = new Set(
+    dividends
+      .filter(d => d.rate > 0 && new Date(d.paymentDate) >= cutoff)
+      .map(d => d.paymentDate?.substring(0, 7))
+      .filter(Boolean)
+  );
+  return meses.size;
+}
 
 async function fetchBrapiDivGrowth(ticker) {
   if (!BRAPI_TOKEN) return null;
@@ -170,7 +183,7 @@ async function fetchBrapiDivGrowth(ticker) {
       { timeout: 10000 }
     );
     const dividends = data?.results?.[0]?.cashDividends || data?.cashDividends;
-    return calcDivGrowth(dividends);
+    return { divGrowth: calcDivGrowth(dividends), consistency: calcConsistency(dividends) };
   } catch (e) {
     console.warn(`[enricher] brapi dividends erro ${ticker}:`, e.message);
     return null;
@@ -264,11 +277,12 @@ async function enrichFII(ticker, dadosBase = {}) {
     else if (Object.values(si).some(v => v != null)) source = 'fundsexplorer+statusinvest';
   }
 
-  // 3. brapi div_growth (se ainda nulo)
-  if (result.div_growth == null) {
-    const dg = await fetchBrapiDivGrowth(ticker);
-    if (dg != null) {
-      result.div_growth = dg;
+  // 3. brapi div_growth + consistency (se ainda nulos)
+  if (result.div_growth == null || result.consistency == null) {
+    const bg = await fetchBrapiDivGrowth(ticker);
+    if (bg) {
+      if (result.div_growth  == null && bg.divGrowth   != null) result.div_growth  = bg.divGrowth;
+      if (result.consistency == null && bg.consistency != null) result.consistency = bg.consistency;
       source += '+brapi_div';
     }
   }

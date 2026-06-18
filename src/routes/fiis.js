@@ -1114,9 +1114,31 @@ router.post('/top10/scan', scanLimiter, async (req, res) => {
   }
 });
 
-// GET /api/fiis/top50 — retorna top 50 do cache
+// GET /api/fiis/top50 — retorna top 50 do banco (scored) com breakdown
 router.get('/top50', async (req, res) => {
   try {
+    // Tenta banco primeiro (scoring diário persiste aqui)
+    const { rows } = await pool.query(
+      `SELECT ticker, name, segment, segmento, price, dy_12m, pvp, vacancy,
+              liquidity, score, action, consistency, properties,
+              score_breakdown, cobertura_pct, score_updated_at, scanned_at
+       FROM fiis_market
+       WHERE score IS NOT NULL AND price IS NOT NULL AND price > 0
+       ORDER BY score DESC
+       LIMIT 50`
+    );
+    if (rows.length > 0) {
+      const top50 = rows.map(r => ({
+        ...r,
+        score_breakdown: r.score_breakdown || null,
+        cobertura_pct:   r.cobertura_pct   || null,
+        score_updated_at: r.score_updated_at
+          ? (r.score_updated_at instanceof Date ? r.score_updated_at.toISOString() : String(r.score_updated_at))
+          : null,
+      }));
+      return res.json({ top50, from_db: true });
+    }
+    // Fallback: cache em memória
     if (top10Cache?.data?.top50) {
       return res.json({ top50: top10Cache.data.top50, gerado_em: top10Cache.data.gerado_em, from_cache: true });
     }
@@ -1189,122 +1211,44 @@ router.get('/score/diagnostico', authMiddleware, diagnosticoLimiter, validateTic
       enrichSource = `enricher_erro:${e.message.substring(0, 40)}`;
     }
 
-    // 3. Merge final — enricher tem prioridade sobre brapi para pvp e dy_12m
+    // 3. Merge final — brapi Pro tem prioridade para dy_12m, pvp, div_growth
     const fii = {
-      ...brapi,
-      pvp:    enriched.pvp    ?? brapi.pvp    ?? null,
-      dy_12m: enriched.dy_12m ?? brapi.dy_12m ?? null,
-      ...enriched,
+      ticker,
+      name:       enriched.name       || brapi.name       || ticker,
+      pvp:        brapi.pvp           ?? enriched.pvp      ?? null,
+      dy_12m:     brapi.dy_12m        ?? enriched.dy_12m   ?? null,
+      div_growth: brapi.div_growth    ?? enriched.div_growth ?? null,
+      liquidity:  brapi.liquidity     ?? enriched.liquidity ?? null,
+      vacancy:    enriched.vacancy    ?? null,
+      properties: enriched.properties ?? null,
+      wault:      enriched.wault      ?? null,
+      leverage:   enriched.leverage   ?? null,
+      consistency: enriched.consistency ?? null,
     };
 
-    // Fonte efetiva de cada campo
-    const fonteDY  = fii.dy_12m  != null && enriched.dy_12m  != null ? enrichSource : brapiSource;
-    const fontePVP = fii.pvp     != null && enriched.pvp     != null ? enrichSource : brapiSource;
+    // 4. Scoring segmentado via novo engine
+    const { calcularScore: calcScore, detectarSegmento } = require('../engine/fii-scorer');
+    const { score: scoreTotal, segmento, cobertura_pct, score_breakdown } = calcScore(fii);
 
-    // 4. Pontuação por critério (null-safe — igual ao fii-scorer.js)
-    const criterios = [];
+    const criterios = score_breakdown.criterios.map(c => ({
+      nome:   c.campo, campo: c.campo, max: c.peso,
+      pts:    c.pontos, valor: c.valor, pct: c.pct,
+      fonte:  ['dy_12m','pvp','div_growth','liquidity'].includes(c.campo) ? brapiSource : enrichSource,
+      null:   false,
+    }));
+    const nullCount = score_breakdown.criterios_sem_dado.length;
 
-    // DY Sustentável 20pts
-    let ptsDY = 0;
-    if (fii.dy_12m != null) {
-      if (fii.dy_12m >= 10) ptsDY = 20;
-      else if (fii.dy_12m >= 8) ptsDY = 15;
-      else if (fii.dy_12m >= 6) ptsDY = 10;
-      else ptsDY = 5;
-    }
-    criterios.push({ nome: 'DY Sustentável', max: 20, pts: ptsDY,
-      campo: 'dy_12m', valor: fii.dy_12m, fonte: fonteDY,
-      null: fii.dy_12m == null });
+    // Log no servidor
+    console.log(`\n=== DIAGNÓSTICO ${ticker} [${segmento}] cobertura=${cobertura_pct}% ===`);
+    criterios.forEach(c => console.log(`  ${c.campo}: ${c.valor} (${c.fonte}) → ${c.pts}/${c.max}pts`));
+    score_breakdown.criterios_sem_dado.forEach(c => console.log(`  ${c.campo}: NULL (excluído)`));
+    console.log(`  SCORE: ${scoreTotal}/100`);
 
-    // P/VP 15pts
-    let ptsPVP = 0;
-    if (fii.pvp != null) {
-      if (fii.pvp < 0.90) ptsPVP = 15;
-      else if (fii.pvp < 1.00) ptsPVP = 12;
-      else if (fii.pvp < 1.10) ptsPVP = 8;
-      else ptsPVP = 3;
-    }
-    criterios.push({ nome: 'P/VP', max: 15, pts: ptsPVP,
-      campo: 'pvp', valor: fii.pvp, fonte: fontePVP,
-      null: fii.pvp == null });
-
-    // Vacância 15pts
-    let ptsVac = 0;
-    if (fii.vacancy != null) {
-      if (fii.vacancy < 3) ptsVac = 15;
-      else if (fii.vacancy < 8) ptsVac = 10;
-      else if (fii.vacancy < 15) ptsVac = 5;
-    }
-    criterios.push({ nome: 'Vacância', max: 15, pts: ptsVac,
-      campo: 'vacancy', valor: fii.vacancy, fonte: enrichSource,
-      null: fii.vacancy == null });
-
-    // Crescimento DY 15pts
-    let ptsDG = 0;
-    if (fii.div_growth != null) {
-      if (fii.div_growth > 0) ptsDG = 15;
-      else if (fii.div_growth === 0) ptsDG = 8;
-    }
-    criterios.push({ nome: 'Crescimento DY', max: 15, pts: ptsDG,
-      campo: 'div_growth', valor: fii.div_growth, fonte: enrichSource,
-      null: fii.div_growth == null });
-
-    // WAULT 10pts
-    let ptsWault = 0;
-    if (fii.wault != null) {
-      if (fii.wault > 5) ptsWault = 10;
-      else if (fii.wault > 3) ptsWault = 7;
-      else ptsWault = 3;
-    }
-    criterios.push({ nome: 'WAULT', max: 10, pts: ptsWault,
-      campo: 'wault', valor: fii.wault, fonte: enrichSource,
-      null: fii.wault == null });
-
-    // Alavancagem 10pts
-    let ptsLev = 0;
-    if (fii.leverage != null) {
-      if (fii.leverage < 20) ptsLev = 10;
-      else if (fii.leverage < 35) ptsLev = 6;
-      else ptsLev = 2;
-    }
-    criterios.push({ nome: 'Alavancagem', max: 10, pts: ptsLev,
-      campo: 'leverage', valor: fii.leverage, fonte: enrichSource,
-      null: fii.leverage == null });
-
-    // Diversificação 10pts
-    let ptsProp = 0;
-    if (fii.properties != null) {
-      if (fii.properties > 10) ptsProp = 10;
-      else if (fii.properties > 5) ptsProp = 6;
-      else ptsProp = 3;
-    }
-    criterios.push({ nome: 'Diversificação', max: 10, pts: ptsProp,
-      campo: 'properties', valor: fii.properties, fonte: enrichSource,
-      null: fii.properties == null });
-
-    // Liquidez 5pts
-    let ptsLiq = 0;
-    if (fii.liquidity != null) {
-      if (fii.liquidity > 2000000) ptsLiq = 5;
-      else if (fii.liquidity > 500000) ptsLiq = 3;
-      else ptsLiq = 1;
-    }
-    criterios.push({ nome: 'Liquidez', max: 5, pts: ptsLiq,
-      campo: 'liquidity', valor: fii.liquidity, fonte: brapiSource,
-      null: fii.liquidity == null });
-
-    const scoreTotal = Math.min(criterios.reduce((s, c) => s + c.pts, 0), 100);
-    const nullCount  = criterios.filter(c => c.null).length;
-
-    // Log no servidor também
-    console.log(`\n=== DIAGNÓSTICO ${ticker} ===`);
-    criterios.forEach(c => {
-      const flag = c.null ? ' ← NULL' : '';
-      console.log(`  ${c.nome}: ${c.valor ?? 'null'} (${c.fonte}) → ${c.pts}/${c.max}pts${flag}`);
+    resultados.push({
+      ticker, segmento, cobertura_pct, criterios,
+      criterios_sem_dado: score_breakdown.criterios_sem_dado,
+      scoreTotal, nullCount, campos_raw: fii,
     });
-    console.log(`  SCORE: ${scoreTotal}/100  |  ${nullCount} campos null`);
-
-    resultados.push({ ticker, criterios, scoreTotal, nullCount, campos_raw: fii });
 
     // Delay entre tickers para não sobrecarregar APIs
     await new Promise(r => setTimeout(r, 800));

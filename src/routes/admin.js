@@ -395,4 +395,15 @@ router.post('/errors/frontend', async (req, res) => {
   }
 });
 
+// POST /api/admin/scoring/run — trigger manual do scoring segmentado
+router.post('/scoring/run', async (req, res) => {
+  res.json({ ok: true, message: 'Scoring iniciado em background' });
+  try {
+    const { rodarScoringDiario } = require('../scheduler/fii-daily-scorer');
+    await rodarScoringDiario();
+  } catch (err) {
+    console.error('[admin/scoring/run] erro:', err.message);
+  }
+});
+
 module.exports = router;
