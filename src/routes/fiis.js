@@ -1150,23 +1150,20 @@ router.get('/score/diagnostico', authMiddleware, diagnosticoLimiter, validateTic
   const resultados = [];
 
   for (const ticker of tickers) {
-    // 1. Dados brapi (dy_12m, pvp, liquidity)
+    // 1. Dados brapi Pro (dy_12m rolling, pvp, liquidity)
     let brapi = {};
     let brapiSource = 'null';
     try {
-      // Usa endpoint básico (sem modules) — funciona no plano gratuito para FIIs
-      const { data } = await axios.get(
-        `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}`,
-        { timeout: 10000 }
-      );
-      const q = data?.results?.[0];
-      if (q) {
+      const { buscarLoteBrapi } = require('../collectors/fiis');
+      const bmap = await buscarLoteBrapi([ticker]);
+      const b = bmap[ticker];
+      if (b) {
         brapi = {
-          dy_12m:    q.dividendYield       ?? null,
-          pvp:       q.priceToBook         ?? null,
-          liquidity: q.regularMarketVolume ?? null,
+          dy_12m:    b.dy_12m    ?? null,
+          pvp:       b.pvp       ?? null,
+          liquidity: b.liquidity ?? null,
         };
-        brapiSource = 'brapi';
+        brapiSource = 'brapi_pro';
       }
     } catch (e) {
       brapiSource = `brapi_erro:${e.message.substring(0, 40)}`;

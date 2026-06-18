@@ -27,20 +27,20 @@ async function buscarLoteBrapi(tickers) {
   );
   const map = {};
   for (const q of (data?.results || [])) {
-    const divs = q.dividendsData?.cashDividends || [];
-    const ks   = q.defaultKeyStatistics || {};
+    const divs  = q.dividendsData?.cashDividends || [];
+    const ks    = q.defaultKeyStatistics || {};
+    const price = q.regularMarketPrice ?? null;
+    const soma12m = calcularDY12m(divs);
+    // DY 12m = (soma dividendos 12m / preço) * 100  → percentual correto
+    const dy12m = (soma12m && price) ? parseFloat(((soma12m / price) * 100).toFixed(4)) : null;
     map[q.symbol] = {
-      name:      q.longName || q.shortName || q.symbol,
-      price:     q.regularMarketPrice  ?? null,
-      liquidity: q.regularMarketVolume ?? null,
-      // P/VP direto do Brapi Pro — sem scraping
-      pvp:       ks.priceToBook        ?? null,
-      // DY 12m calculado somando os últimos 12 meses de cashDividends
-      dy_12m:    calcularDY12m(divs)   || null,
-      // Crescimento de DY: média dos últimos 6m vs 6m anteriores
+      name:       q.longName || q.shortName || q.symbol,
+      price,
+      liquidity:  q.regularMarketVolume ?? null,
+      pvp:        ks.priceToBook        ?? null,
+      dy_12m:     dy12m,
       div_growth: calcularDivGrowth(divs),
-      // Próximo ou último rendimento (janela 35 dias)
-      proximo:   extrairProximoRendimento(divs),
+      proximo:    extrairProximoRendimento(divs),
     };
   }
   return map;
