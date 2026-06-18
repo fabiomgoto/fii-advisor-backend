@@ -11,12 +11,14 @@ const { sincronizarProventos } = require('../scheduler/fii-proventos-sync');
 const authMiddleware = require('../middleware/auth');
 const { scanLimiter, diagnosticoLimiter, importLimiter } = require('../middleware/rateLimiter');
 const { validateTicker, validateTickerList } = require('../middleware/validateTicker');
+const { extrairProximoRendimento, brapiDividsToDB } = require('../utils/dividendUtils');
+
+const BRAPI_TOKEN = process.env.BRAPI_TOKEN;
 
 // Rotas protegidas — exigem JWT válido do Supabase
 // /market, /search, /top10, /top50 são públicas (dados de mercado)
 router.use(['/portfolio', '/contributions', '/dividends', '/rentabilidade', '/proventos'], authMiddleware);
 
-const BRAPI_TOKEN = process.env.BRAPI_TOKEN;
 const PRICE_CACHE = {}; // ticker → { price, dy_12m, pvp, ts }
 const CACHE_TTL_MS = 15 * 60 * 1000; // 15 min
 
@@ -766,94 +768,41 @@ router.post('/proventos/sync', async (req, res) => {
   }
 });
 
-// POST /api/fiis/dividends/import-brapi/:ticker — importa 1 ticker via StatusInvest
+// POST /api/fiis/dividends/import-brapi/:ticker — importa histórico de 1 ticker via Brapi Pro
 router.post('/dividends/import-brapi/:ticker', importLimiter, validateTicker, async (req, res) => {
   const userId = getUserId(req);
-  const ticker = req.params.ticker.toUpperCase();
+  const ticker = req.params.ticker;
+  try {
+    const { data } = await axios.get(
+      `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}&dividends=true`,
+      { timeout: 15000 }
+    );
+    const divs = data?.results?.[0]?.dividendsData?.cashDividends || [];
+    if (!divs.length) return res.status(404).json({ error: 'Nenhum dividendo encontrado no Brapi', ticker });
 
-  function parseDateBR(s) {
-    if (!s || !s.includes('/')) return null;
-    const [d, m, y] = s.split('/');
-    return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
-  }
-
-  // Helper: insere lista de { exDate, paymentDate, rate } na tabela dividends
-  async function upsertDividends(lista) {
-    let inseridos = 0;
+    const lista = brapiDividsToDB(divs);
+    let importados = 0;
     for (const { exDate, paymentDate, rate } of lista) {
-      if (!exDate || rate <= 0) continue;
-      await pool.query(`DELETE FROM dividends WHERE user_id=$1 AND ticker=$2 AND ex_date=$3`, [userId, ticker, exDate]);
       await pool.query(
-        `INSERT INTO dividends (user_id, ticker, ex_date, payment_date, value_per_share) VALUES ($1,$2,$3,$4,$5)`,
+        `INSERT INTO dividends (user_id, ticker, ex_date, payment_date, value_per_share)
+         VALUES ($1,$2,$3,$4,$5)
+         ON CONFLICT (user_id, ticker, ex_date)
+         DO UPDATE SET value_per_share = EXCLUDED.value_per_share, payment_date = EXCLUDED.payment_date`,
         [userId, ticker, exDate, paymentDate || null, rate]
       );
-      inseridos++;
+      importados++;
     }
-    return inseridos;
-  }
-
-  try {
-    let proventos = [];
-    let fonte = '';
-
-    // 1ª tentativa: mfinance.com.br — histórico completo desde IPO
-    try {
-      const { data } = await axios.get(
-        `https://mfinance.com.br/api/v1/fiis/dividends/${ticker}`,
-        { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json' } }
-      );
-      const list = data?.dividends || [];
-      if (list.length > 0) {
-        proventos = list.map(p => ({
-          exDate:      (p.declaredDate || '').substring(0, 10),
-          paymentDate: (p.payDate      || '').substring(0, 10) || null,
-          rate:        parseFloat(p.value || 0),
-        }));
-        fonte = 'mfinance';
-      }
-    } catch (_) {}
-
-    // 2ª tentativa: StatusInvest (fallback — limita a 17 meses)
-    if (proventos.length === 0) {
-      function parseDateBR(s) {
-        if (!s || !s.includes('/')) return null;
-        const [d, m, y] = s.split('/');
-        return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
-      }
-      const endDate = new Date().toISOString().substring(0, 10);
-      const { data } = await axios.get(
-        `https://statusinvest.com.br/fii/companytickerprovents?ticker=${ticker}&type=1&datetype=3&startDate=2018-01-01&endDate=${endDate}`,
-        { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': `https://statusinvest.com.br/fundos-imobiliarios/${ticker.toLowerCase()}`, 'Accept': 'application/json' } }
-      );
-      const list = data?.assetEarningsModels || [];
-      proventos = list.map(p => ({
-        exDate:      parseDateBR(p.ed),
-        paymentDate: parseDateBR(p.pd),
-        rate:        parseFloat(p.v || 0),
-      }));
-      fonte = 'statusinvest';
-    }
-
-    const inseridos = await upsertDividends(proventos);
-    console.log(`[IMPORT] ${ticker}: ${inseridos} dividendos (${fonte})`);
-    res.json({ ok: true, ticker, importados: inseridos, fonte });
+    console.log(`[IMPORT] ${ticker}: ${importados} dividendos (brapi)`);
+    res.json({ ok: true, ticker, importados, fonte: 'brapi' });
   } catch (err) {
     console.warn(`[IMPORT] Erro ${ticker}:`, err.message);
     res.status(500).json({ error: err.message, ticker });
   }
 });
 
-// POST /api/fiis/dividends/import-brapi — importa histórico de dividendos via StatusInvest
+// POST /api/fiis/dividends/import-brapi — importa histórico de toda a carteira via Brapi Pro
 router.post('/dividends/import-brapi', importLimiter, async (req, res) => {
   const userId = getUserId(req);
-
-  // Helper: converte "DD/MM/YYYY" → "YYYY-MM-DD"
-  function parseDateBR(s) {
-    if (!s || !s.includes('/')) return null;
-    const [d, m, y] = s.split('/');
-    return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
-  }
-
   try {
     const { rows: fiis } = await pool.query(
       'SELECT ticker FROM portfolio_fiis WHERE user_id = $1',
@@ -863,66 +812,40 @@ router.post('/dividends/import-brapi', importLimiter, async (req, res) => {
 
     let totalImportados = 0;
     const erros = [];
-    const startDate = '2018-01-01';
-    const endDate   = new Date().toISOString().substring(0, 10);
 
     for (const { ticker } of fiis) {
       try {
-        const url = `https://statusinvest.com.br/fii/companytickerprovents?ticker=${ticker}&type=1&datetype=3&startDate=${startDate}&endDate=${endDate}`;
-        const { data } = await axios.get(url, {
-          timeout: 15000,
-          headers: {
-            'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36',
-            'Referer':    `https://statusinvest.com.br/fundos-imobiliarios/${ticker.toLowerCase()}`,
-            'Accept':     'application/json, text/plain, */*',
-          },
-        });
+        const { data } = await axios.get(
+          `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}&dividends=true`,
+          { timeout: 15000 }
+        );
+        const divs = data?.results?.[0]?.dividendsData?.cashDividends || [];
+        if (!divs.length) continue;
 
-        const proventos = data?.assetEarningsModels || [];
-        if (!proventos.length) continue;
-
+        const lista = brapiDividsToDB(divs);
         let inseridos = 0;
-        for (const p of proventos) {
-          // ed = data COM (DD/MM/YYYY), pd = data pgto (DD/MM/YYYY), v = valor
-          const exDate      = parseDateBR(p.ed);
-          const paymentDate = parseDateBR(p.pd);
-          const rate        = parseFloat(p.v || 0);
-
-          if (!exDate || rate <= 0) continue;
-
-          // Upsert sem depender de constraint: deleta e re-insere
-          await pool.query(
-            `DELETE FROM dividends WHERE user_id=$1 AND ticker=$2 AND ex_date=$3`,
-            [userId, ticker.toUpperCase(), exDate]
-          );
+        for (const { exDate, paymentDate, rate } of lista) {
           await pool.query(
             `INSERT INTO dividends (user_id, ticker, ex_date, payment_date, value_per_share)
-             VALUES ($1, $2, $3, $4, $5)`,
+             VALUES ($1,$2,$3,$4,$5)
+             ON CONFLICT (user_id, ticker, ex_date)
+             DO UPDATE SET value_per_share = EXCLUDED.value_per_share, payment_date = EXCLUDED.payment_date`,
             [userId, ticker.toUpperCase(), exDate, paymentDate || null, rate]
           );
           inseridos++;
         }
-
         totalImportados += inseridos;
-        console.log(`[IMPORT-SI] ${ticker}: ${inseridos}/${proventos.length} dividendos importados`);
-        await new Promise(r => setTimeout(r, 400));
+        console.log(`[IMPORT] ${ticker}: ${inseridos} dividendos (brapi)`);
       } catch (e) {
-        console.warn(`[IMPORT-SI] Erro ${ticker}:`, e.message);
+        console.warn(`[IMPORT] Erro ${ticker}:`, e.message);
         erros.push(ticker);
       }
     }
 
-    // Sync proventos após importação
     const { sincronizarTodosProventos } = require('../scheduler/fii-proventos-sync');
     const syncResult = await sincronizarTodosProventos(userId);
 
-    res.json({
-      ok:            true,
-      importados:    totalImportados,
-      tickers:       fiis.length - erros.length,
-      erros,
-      sincronizados: syncResult.sincronizados,
-    });
+    res.json({ ok: true, importados: totalImportados, tickers: fiis.length - erros.length, erros, sincronizados: syncResult.sincronizados });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -1446,39 +1369,15 @@ let _siCache = null;
 let _siCacheTs = 0;
 const SI_TTL = 6 * 60 * 60 * 1000;
 
-// Busca próximo rendimento declarado via SI provents.
-// Prioridade 1: pagamento futuro mais próximo.
-// Prioridade 2: pagamento mais recente nos últimos 35 dias (fundo pagou este mês
-// mas ainda não declarou o próximo — evita o card ficar vazio até o dia da declaração).
+// Busca próximo/último rendimento via Brapi Pro (substitui scraping do StatusInvest).
 async function getProximoRendimento(ticker) {
   try {
-    function parseDateBR(s) {
-      if (!s || !s.includes('/')) return null;
-      const [d, m, y] = s.split('/');
-      return `${y}-${m.padStart(2,'0')}-${d.padStart(2,'0')}`;
-    }
-    const hoje   = new Date().toISOString().substring(0, 10);
-    const inicio = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
-    const futuro = new Date(Date.now() + 180 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
     const { data } = await axios.get(
-      `https://statusinvest.com.br/fii/companytickerprovents?ticker=${ticker}&type=1&datetype=3&startDate=${inicio}&endDate=${futuro}`,
-      { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0', 'Referer': `https://statusinvest.com.br/fundos-imobiliarios/${ticker.toLowerCase()}`, 'Accept': 'application/json' } }
+      `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}&dividends=true`,
+      { timeout: 10000 }
     );
-    const list = (data?.assetEarningsModels || [])
-      .map(p => ({ valor: parseFloat(p.v || 0), data_com: parseDateBR(p.ed), data_pgto: parseDateBR(p.pd) }))
-      .filter(p => p.data_pgto);
-
-    if (!list.length) return null;
-
-    const futuros = list.filter(p => p.data_pgto >= hoje)
-                        .sort((a, b) => a.data_pgto.localeCompare(b.data_pgto));
-    if (futuros.length) return { ...futuros[0], recente: false };
-
-    const recentes = list.filter(p => p.data_pgto < hoje)
-                         .sort((a, b) => b.data_pgto.localeCompare(a.data_pgto));
-    if (recentes.length) return { ...recentes[0], recente: true };
-
-    return null;
+    const divs = data?.results?.[0]?.dividendsData?.cashDividends || [];
+    return extrairProximoRendimento(divs);
   } catch (_) { return null; }
 }
 
