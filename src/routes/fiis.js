@@ -571,15 +571,15 @@ router.get('/portfolio/snapshots', async (req, res) => {
       return v < parseFloat(worst?.variacao_pct ?? Infinity) ? r : worst;
     }, null);
 
-    const fmt = (r) => r ? {
-      data:         r.data,
+    const fmtRow = (r) => r ? {
+      data:         r.data instanceof Date ? r.data.toISOString().substring(0, 10) : String(r.data).substring(0, 10),
       valor:        parseFloat(r.valor_atual),
       variacao_pct: parseFloat(r.variacao_pct),
     } : null;
 
     res.json({
       snapshots: rows.map(r => ({
-        data:            r.data,
+        data:            r.data instanceof Date ? r.data.toISOString().substring(0, 10) : String(r.data).substring(0, 10),
         valor_atual:     parseFloat(r.valor_atual),
         total_investido: parseFloat(r.total_investido),
         variacao_dia:    r.variacao_dia   != null ? parseFloat(r.variacao_dia)  : null,
@@ -590,8 +590,8 @@ router.get('/portfolio/snapshots', async (req, res) => {
         total_investido:    parseFloat(ultimo.total_investido),
         variacao_total:     Math.round(variacao_total * 100) / 100,
         variacao_total_pct: variacao_total_pct != null ? Math.round(variacao_total_pct * 10000) / 10000 : null,
-        maior_alta:  fmt(maior_alta),
-        maior_baixa: fmt(maior_baixa),
+        maior_alta:  fmtRow(maior_alta),
+        maior_baixa: fmtRow(maior_baixa),
       },
     });
   } catch (err) {
