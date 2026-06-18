@@ -416,6 +416,12 @@ async function runMigrations() {
   await run('error_logs_idx_resolved', `CREATE INDEX IF NOT EXISTS idx_error_logs_resolved ON error_logs(resolved)`);
   await run('error_logs_idx_created',  `CREATE INDEX IF NOT EXISTS idx_error_logs_created  ON error_logs(created_at DESC)`);
 
+  // ── Cleanup: remove fii_scan_history rows where top3 stored full calcularScore() object ──
+  await run('cleanup_stale_scan_history_top3', `
+    DELETE FROM fii_scan_history
+    WHERE top3::text LIKE '%score_breakdown%'
+  `);
+
   console.log('[MIGRATIONS] concluídas');
 }
 
