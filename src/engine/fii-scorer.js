@@ -3,33 +3,57 @@
 // ─── Lookup ticker → segmento ────────────────────────────────────────────────
 
 const TICKER_SEGMENTO = {
-  // FIAGRO
-  SNAG11: 'agro', RZAG11: 'agro', HCTR11: 'agro', JURO11: 'agro',
-  // Recebíveis CRI
-  KNCR11: 'recebiveis', VGIP11: 'recebiveis', MXRF11: 'recebiveis',
+  // ── FIAGRO ───────────────────────────────────────────────────────────────────
+  SNAG11: 'agro', RZAG11: 'agro', RZAK11: 'agro', JURO11: 'agro',
+  HCTR11: 'agro', GCRA11: 'agro', PGPF11: 'agro',
+
+  // ── Recebíveis / CRI ─────────────────────────────────────────────────────────
+  KNCR11: 'recebiveis', KNIP11: 'recebiveis', MXRF11: 'recebiveis',
   VRTA11: 'recebiveis', MCCI11: 'recebiveis', RBRR11: 'recebiveis',
-  KNIP11: 'recebiveis', IRDM11: 'recebiveis', BTCI11: 'recebiveis',
-  SNCI11: 'recebiveis', RZAK11: 'recebiveis', CVBI11: 'recebiveis',
-  HABT11: 'recebiveis', HCRI11: 'recebiveis', PLCR11: 'recebiveis',
-  NCHB11: 'recebiveis', RBRY11: 'recebiveis', CPTS11: 'recebiveis',
-  TPFT11: 'recebiveis', VCJR11: 'recebiveis',
-  // FOF
-  BCFF11: 'fof', HFOF11: 'fof', KFOF11: 'fof', RBFF11: 'fof', MGFF11: 'fof',
-  // Tijolo (logística, galpões, híbridos com imóveis)
-  HGLG11: 'tijolo', RZTR11: 'tijolo', BTLG11: 'tijolo', BRCO11: 'tijolo',
-  GGRC11: 'tijolo', TRXF11: 'tijolo', KNRI11: 'tijolo', XPLG11: 'tijolo',
-  LVBI11: 'tijolo', LOG11: 'tijolo',  VILG11: 'tijolo', FIIB11: 'tijolo',
-  // Lajes Corporativas
+  VGIP11: 'recebiveis', IRDM11: 'recebiveis', BTCI11: 'recebiveis',
+  SNCI11: 'recebiveis', CVBI11: 'recebiveis', HABT11: 'recebiveis',
+  HCRI11: 'recebiveis', PLCR11: 'recebiveis', NCHB11: 'recebiveis',
+  RBRY11: 'recebiveis', CPTS11: 'recebiveis', TPFT11: 'recebiveis',
+  VCJR11: 'recebiveis', FEXC11: 'recebiveis', VGIA11: 'recebiveis',
+  DEVA11: 'recebiveis', XPCI11: 'recebiveis', HGCR11: 'recebiveis',
+  NPAR11: 'recebiveis', OUJP11: 'recebiveis', CACR11: 'recebiveis',
+  RZTR11: 'recebiveis', MGCR11: 'recebiveis', VSLH11: 'recebiveis',
+  BTAL11: 'recebiveis',
+
+  // ── FOF ──────────────────────────────────────────────────────────────────────
+  BCFF11: 'fof', HFOF11: 'fof', KFOF11: 'fof', RBFF11: 'fof',
+  MGFF11: 'fof', TFOF11: 'fof', BPFF11: 'fof', CXOF11: 'fof',
+  IBFF11: 'fof', NFOF11: 'fof',
+
+  // ── Tijolo — logística / galpões / industrial ─────────────────────────────────
+  HGLG11: 'tijolo', BTLG11: 'tijolo', BRCO11: 'tijolo', GGRC11: 'tijolo',
+  TRXF11: 'tijolo', KNRI11: 'tijolo', XPLG11: 'tijolo', LVBI11: 'tijolo',
+  LOG11:  'tijolo', VILG11: 'tijolo', FIIB11: 'tijolo', GLOG11: 'tijolo',
+  GALG11: 'tijolo', SDIL11: 'tijolo', VGHF11: 'tijolo', CXAG11: 'tijolo',
+  HSLG11: 'tijolo', TGAR11: 'tijolo', GTWR11: 'tijolo',
+
+  // ── Lajes Corporativas ───────────────────────────────────────────────────────
   PVBI11: 'lajes', RCRB11: 'lajes', BRCR11: 'lajes', JSRE11: 'lajes',
-  TBLG11: 'lajes', RFOF11: 'lajes', VINO11: 'lajes', PATC11: 'lajes',
-  HGPO11: 'lajes', EDGA11: 'lajes',
-  // Shopping
+  VINO11: 'lajes', PATC11: 'lajes', HGPO11: 'lajes', EDGA11: 'lajes',
+  TBLG11: 'lajes', RFOF11: 'lajes', HGRE11: 'lajes', XPPR11: 'lajes',
+  CBOP11: 'lajes', FTWR11: 'lajes', BMLC11: 'lajes', RBED11: 'lajes',
+
+  // ── Shopping ─────────────────────────────────────────────────────────────────
   XPML11: 'shopping', VISC11: 'shopping', HSML11: 'shopping', MALL11: 'shopping',
-  HGBS11: 'shopping', GGRC11: 'shopping', GSFI11: 'shopping',
-  // Agências
+  HGBS11: 'shopping', GSFI11: 'shopping', FVPQ11: 'shopping', ABCP11: 'shopping',
+  FLRP11: 'shopping', JRDM11: 'shopping', PQDP11: 'shopping',
+
+  // ── Desenvolvimento ──────────────────────────────────────────────────────────
+  URPR11: 'desenvolvimento', PLPL11: 'desenvolvimento', HOSI11: 'desenvolvimento',
+  RBVA11: 'desenvolvimento', GPCP11: 'desenvolvimento', MFAI11: 'desenvolvimento',
+
+  // ── Agências bancárias ───────────────────────────────────────────────────────
   BBPO11: 'agencias', AGCX11: 'agencias', BBRC11: 'agencias',
-  // Hotel
-  HTMX11: 'hotel', XPHT11: 'hotel', BPFF11: 'hotel',
+  SAAG11: 'agencias', RBBV11: 'agencias',
+
+  // ── Hotel / Hotelaria ────────────────────────────────────────────────────────
+  HTMX11: 'hotel', XPHT11: 'hotel', HOTH11: 'hotel', RBTS11: 'hotel',
+  HHBR11: 'hotel',
 };
 
 function detectarSegmento(fii) {
