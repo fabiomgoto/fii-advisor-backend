@@ -173,11 +173,32 @@ const MODELOS = {
   ],
 };
 
+// ─── Proteção contra DY inflado por colapso de cota ─────────────────────────
+
+function detectarCriseDY(fii) {
+  const dy  = fii.dy_12m  ?? 0;
+  const pvp = fii.pvp     ?? 1;
+  const alertas = [];
+
+  // DY > 20% + P/VP < 0.50 = provável colapso de cota (ex: CACR11)
+  if (dy > 20 && pvp < 0.50) {
+    alertas.push(`DY inflado (${dy.toFixed(1)}%) com P/VP colapsado (${pvp.toFixed(2)})`);
+  }
+
+  // DY > 30% isoladamente é suspeito — mesmo com P/VP ok
+  if (dy > 30 && pvp < 0.70) {
+    alertas.push(`DY anormalmente alto (${dy.toFixed(1)}%)`);
+  }
+
+  return { emCrise: alertas.length > 0, alertas };
+}
+
 // ─── Motor principal ─────────────────────────────────────────────────────────
 
 function calcularScore(fii) {
   const segmento = detectarSegmento(fii);
   const modelo   = MODELOS[segmento] || MODELOS.universal;
+  const crise    = detectarCriseDY(fii);
 
   let somapontos      = 0;
   let somaDisponivel  = 0;
@@ -190,7 +211,12 @@ function calcularScore(fii) {
       criterios_sem_dado.push({ campo, peso });
       continue;
     }
-    const fracao = Math.max(0, Math.min(1, fn(valor)));
+
+    // Em crise: zera a pontuação do DY (o campo existe, mas vale 0 pontos)
+    const fracao = (crise.emCrise && campo === 'dy_12m')
+      ? 0
+      : Math.max(0, Math.min(1, fn(valor)));
+
     const pontos = parseFloat((fracao * peso).toFixed(2));
     const pct    = Math.round(fracao * 100);
     somapontos     += pontos;
@@ -206,11 +232,14 @@ function calcularScore(fii) {
     ? Math.round((somaDisponivel / modelo.reduce((s, c) => s + c.peso, 0)) * 100)
     : 0;
 
+  const breakdown = { criterios, criterios_sem_dado };
+  if (crise.emCrise) breakdown.alertas_dy = crise.alertas;
+
   return {
     score,
     segmento,
     cobertura_pct,
-    score_breakdown: { criterios, criterios_sem_dado },
+    score_breakdown: breakdown,
   };
 }
 
@@ -252,4 +281,4 @@ function calcularScorePerfil(fii, perfil) {
   return Math.min(Math.round((pts / maxDisponivel) * 100), 100);
 }
 
-module.exports = { calcularScore, calcularScorePerfil, getAction, detectarSegmento, PESOS_PERFIL, MODELOS };
+module.exports = { calcularScore, calcularScorePerfil, getAction, detectarSegmento, detectarCriseDY, PESOS_PERFIL, MODELOS };
