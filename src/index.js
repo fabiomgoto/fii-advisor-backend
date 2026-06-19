@@ -227,9 +227,17 @@ async function runMigrations() {
   `);
   await run('fiis_market_cols', `
     ALTER TABLE fiis_market
-      ADD COLUMN IF NOT EXISTS segment    TEXT,
-      ADD COLUMN IF NOT EXISTS vacancy    DECIMAL(8,4),
-      ADD COLUMN IF NOT EXISTS properties INTEGER
+      ADD COLUMN IF NOT EXISTS segment         TEXT,
+      ADD COLUMN IF NOT EXISTS vacancy         DECIMAL(8,4),
+      ADD COLUMN IF NOT EXISTS properties      INTEGER,
+      ADD COLUMN IF NOT EXISTS segmento        TEXT,
+      ADD COLUMN IF NOT EXISTS score_breakdown JSONB,
+      ADD COLUMN IF NOT EXISTS cobertura_pct   DECIMAL(5,2),
+      ADD COLUMN IF NOT EXISTS score_updated_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS wault           DECIMAL(8,4),
+      ADD COLUMN IF NOT EXISTS leverage        DECIMAL(8,4),
+      ADD COLUMN IF NOT EXISTS div_growth      DECIMAL(8,4),
+      ADD COLUMN IF NOT EXISTS consistency     DECIMAL(5,2)
   `);
 
   await run('top10_synthesis', `
@@ -315,17 +323,8 @@ async function runMigrations() {
       ON profile_score_history(user_id, score_type, calculated_at DESC)
   `);
 
-  // ── Migration 010: Reset perfil dos usuários para o novo dual wizard ─────────
-  // Marca todos os perfis como pendentes no novo sistema sem apagar dados legados
-  await run('reset_dual_wizard_flags', `
-    UPDATE user_profiles
-    SET investor_wizard_done = FALSE,
-        financial_wizard_done = FALSE
-    WHERE investor_wizard_done IS TRUE
-       OR financial_wizard_done IS TRUE
-       OR investor_score_v2 IS NOT NULL
-       OR financial_score IS NOT NULL
-  `);
+  // ── Migration 010: Reset perfil (one-time, já aplicado) ─────────────────────
+  // Removido: resetava wizard_done em cada startup, impedindo login.
 
   // ── Migration 009a: Portfolio Snapshots ──────────────────────────────────
   await run('portfolio_snapshots_table', `
@@ -465,26 +464,27 @@ function iniciarScheduler() {
     }
   }, { timezone: 'America/Sao_Paulo' });
 
-  // Scoring segmentado diário: dias úteis às 18h30, após atualização de preços
-  const { rodarScoringDiario } = require('./scheduler/fii-daily-scorer');
+  // Varredura completa diária: todos os ~400 FIIs + score segmentado
+  // 07h: importa Fundamentus + enriquece cache + aplica scorer segmentado
+  // 18h30: rescore com preços do fechamento (sem rebuscar tudo)
+  const { rodarVarreduraCompleta, rodarScoringDiario } = require('./scheduler/fii-daily-scorer');
+
+  cron.schedule('0 7 * * 1-5', async () => {
+    console.log('[CRON] Varredura completa (400+ FIIs)...');
+    try {
+      const r = await rodarVarreduraCompleta();
+      console.log(`[CRON] Varredura completa: ${r.importados} importados, ${r.erros} erros`);
+    } catch (err) {
+      console.error('[CRON] Erro varredura completa:', err.message);
+    }
+  }, { timezone: 'America/Sao_Paulo' });
+
   cron.schedule('30 18 * * 1-5', async () => {
     console.log('[CRON] Scoring diário segmentado...');
     try {
       await rodarScoringDiario();
     } catch (err) {
       console.error('[CRON] Erro scoring diário:', err.message);
-    }
-  }, { timezone: 'America/Sao_Paulo' });
-
-  // Varredura de mercado (popula fiis_market para recomendações): dias úteis às 7h
-  const { rodarFIIScanner } = require('./scheduler/fii-scanner');
-  cron.schedule('0 7 * * 1-5', async () => {
-    console.log('[CRON] Rodando varredura de FIIs...');
-    try {
-      await rodarFIIScanner();
-      console.log('[CRON] Varredura concluída');
-    } catch (err) {
-      console.error('[CRON] Erro varredura:', err.message);
     }
   }, { timezone: 'America/Sao_Paulo' });
 
@@ -500,12 +500,19 @@ function iniciarScheduler() {
     }
   }, { timezone: 'America/Sao_Paulo' });
 
-  // Varredura no startup — sempre, para popular/atualizar fiis_market
+  // Startup: varredura completa só se fiis_market estiver vazio ou desatualizado (> 25h)
   setImmediate(async () => {
     try {
-      console.log('[STARTUP] Rodando varredura inicial de FIIs...');
-      await rodarFIIScanner();
-      console.log('[STARTUP] Varredura inicial concluída.');
+      const { rows } = await pool.query(
+        `SELECT COUNT(*) AS n FROM fiis_market WHERE score_updated_at > NOW() - INTERVAL '25 hours'`
+      );
+      if (parseInt(rows[0]?.n || 0) > 50) {
+        console.log('[STARTUP] fiis_market atualizado, pulando varredura inicial.');
+        return;
+      }
+      console.log('[STARTUP] Rodando varredura completa inicial...');
+      const r = await rodarVarreduraCompleta();
+      console.log(`[STARTUP] Varredura inicial: ${r.importados} importados.`);
     } catch (err) {
       console.warn('[STARTUP] Varredura inicial falhou:', err.message);
     }

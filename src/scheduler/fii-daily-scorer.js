@@ -5,6 +5,17 @@ const { calcularScore, getAction } = require('../engine/fii-scorer');
 
 const delay = (ms) => new Promise(r => setTimeout(r, ms));
 
+// Lê dados enriquecidos do cache local (fii_enriched_cache) para um ticker
+async function getEnriquecido(ticker) {
+  try {
+    const { rows } = await pool.query(
+      'SELECT dados FROM fii_enriched_cache WHERE ticker = $1',
+      [ticker]
+    );
+    return rows[0]?.dados || null;
+  } catch (_) { return null; }
+}
+
 // Rescora todos os FIIs já presentes em fiis_market (sem buscar dados novos)
 async function rodarScoringDiario() {
   console.log('[scoring-diario] Iniciando...');
@@ -64,20 +75,26 @@ async function rodarVarreduraCompleta() {
   for (const ticker of tickers) {
     try {
       const d = todos[ticker];
+      if (!d.price || d.price <= 0) continue;
+
+      // Enriquece com wault/leverage/div_growth do cache local (sem API externa)
+      const enrich = await getEnriquecido(ticker);
+
       const fii = {
         ticker,
-        name:      d.name      ?? null,
-        price:     d.price     ?? null,
-        dy_12m:    d.dy_12m    ?? null,
-        pvp:       d.pvp       ?? null,
-        liquidity: d.liquidity ?? null,
-        net_worth: d.net_worth ?? null,
-        vacancy:   d.vacancy   ?? null,
-        properties:d.properties ?? null,
-        segment:   d.segment   ?? null,
+        name:       d.name        ?? null,
+        price:      d.price       ?? null,
+        dy_12m:     d.dy_12m      ?? null,
+        pvp:        enrich?.pvp   ?? d.pvp       ?? null,
+        liquidity:  d.liquidity   ?? null,
+        net_worth:  d.net_worth   ?? null,
+        vacancy:    enrich?.vacancy ?? d.vacancy  ?? null,
+        properties: enrich?.properties ?? d.properties ?? null,
+        segment:    d.segment     ?? null,
+        wault:      enrich?.wault     ?? null,
+        leverage:   enrich?.leverage  ?? null,
+        div_growth: enrich?.div_growth ?? null,
       };
-
-      if (!fii.price || fii.price <= 0) continue;
 
       const { score, segmento, cobertura_pct, score_breakdown } = calcularScore(fii);
       const action = getAction(score);
@@ -85,12 +102,14 @@ async function rodarVarreduraCompleta() {
       await pool.query(
         `INSERT INTO fiis_market
            (ticker, name, price, dy_12m, pvp, liquidity, net_worth, vacancy, properties, segment,
+            wault, leverage, div_growth,
             score, action, segmento, cobertura_pct, score_breakdown, score_updated_at, scanned_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,NOW(),NOW())
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,NOW(),NOW())
          ON CONFLICT (ticker) DO UPDATE SET
            name=EXCLUDED.name, price=EXCLUDED.price, dy_12m=EXCLUDED.dy_12m,
            pvp=EXCLUDED.pvp, liquidity=EXCLUDED.liquidity, net_worth=EXCLUDED.net_worth,
            vacancy=EXCLUDED.vacancy, properties=EXCLUDED.properties, segment=EXCLUDED.segment,
+           wault=EXCLUDED.wault, leverage=EXCLUDED.leverage, div_growth=EXCLUDED.div_growth,
            score=EXCLUDED.score, action=EXCLUDED.action,
            segmento=EXCLUDED.segmento, cobertura_pct=EXCLUDED.cobertura_pct,
            score_breakdown=EXCLUDED.score_breakdown,
@@ -98,6 +117,7 @@ async function rodarVarreduraCompleta() {
         [
           ticker, fii.name, fii.price, fii.dy_12m, fii.pvp,
           fii.liquidity, fii.net_worth, fii.vacancy, fii.properties, fii.segment,
+          fii.wault, fii.leverage, fii.div_growth,
           score, action, segmento, cobertura_pct, JSON.stringify(score_breakdown),
         ]
       );

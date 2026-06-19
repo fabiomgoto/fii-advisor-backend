@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const axios = require('../services/axiosConfig');
 const pool = require('../db/connection');
-const { calcularScore, calcularScorePerfil, getAction } = require('../engine/fii-scorer');
+const { calcularScore, getAction } = require('../engine/fii-scorer');
 const { buscarFII: buscarFundamentus, buscarTodosFIIs } = require('../collectors/fundamentus');
 const { gerarSintese, gerarSintesePersonalizada } = require('../engine/fii-ai');
 const { getRecommendationConfig, normalizeSegmento } = require('../services/profileScoringService');
@@ -107,7 +107,7 @@ router.get('/search', async (req, res) => {
   }
 });
 
-// GET /api/fiis/portfolio — carteira com preços reais da brapi
+// GET /api/fiis/portfolio — carteira usando fiis_market como fonte de score/segmento
 router.get('/portfolio', async (req, res) => {
   try {
     const userId = getUserId(req);
@@ -118,91 +118,100 @@ router.get('/portfolio', async (req, res) => {
     const tickers = fiis.map(f => f.ticker);
     if (!tickers.length) return res.json([]);
 
-    // Busca preços (cache 15 min)
-    const precos = await fetchPrecos(tickers);
-
-    // Dados do banco (score calculado pelo scanner)
-    const { rows: market } = await pool.query(
-      'SELECT * FROM fiis_market WHERE ticker = ANY($1)',
-      [tickers]
-    );
-    const marketMap = Object.fromEntries(market.map(m => [m.ticker, m]));
-
-    // Consistência de dividendos: meses distintos com pagamento nos últimos 12m / 12 * 10
-    const { rows: consistRows } = await pool.query(
-      `SELECT ticker,
-         ROUND(
-           COUNT(DISTINCT TO_CHAR(ex_date, 'YYYY-MM')) / 12.0 * 10
-         , 1) AS consistency
-       FROM dividends
-       WHERE ticker = ANY($1)
-         AND user_id = $2
-         AND ex_date >= NOW() - INTERVAL '12 months'
-       GROUP BY ticker`,
-      [tickers, userId]
-    );
-    const consistMap = Object.fromEntries(consistRows.map(r => [r.ticker, parseFloat(r.consistency)]));
-
-    // Enriquece cada FII com dados de vacancy, properties, div_growth do cache (assíncrono)
-    const enrichedMap = {};
-    const proximoMap = {};
-    await Promise.all([
-      ...fiis.map(async f => {
-        try {
-          enrichedMap[f.ticker] = await getEnrichedData(f.ticker) || {};
-        } catch (_) {
-          enrichedMap[f.ticker] = {};
-        }
-      }),
-      ...fiis.map(async f => {
-        proximoMap[f.ticker] = await getProximoRendimento(f.ticker);
-      }),
+    // Busca em paralelo: preços ao vivo + dados da tabela central + dividendos do usuário
+    const [
+      precos,
+      { rows: market },
+      { rows: consistRows },
+      { rows: divMesRows },
+      proximoResults,
+    ] = await Promise.all([
+      fetchPrecos(tickers),
+      pool.query(
+        `SELECT ticker, name, price, dy_12m, pvp, liquidity, net_worth, vacancy, properties,
+                wault, leverage, div_growth, consistency,
+                score, action, segmento, cobertura_pct, score_breakdown, score_updated_at
+         FROM fiis_market WHERE ticker = ANY($1)`,
+        [tickers]
+      ),
+      // Consistência local do usuário (12 meses de dividendos registrados)
+      pool.query(
+        `SELECT ticker,
+           ROUND(COUNT(DISTINCT TO_CHAR(ex_date, 'YYYY-MM')) / 12.0 * 10, 1) AS consistency
+         FROM dividends
+         WHERE ticker = ANY($1) AND user_id = $2
+           AND ex_date >= NOW() - INTERVAL '12 months'
+         GROUP BY ticker`,
+        [tickers, userId]
+      ),
+      // Dividendo do mês atual (fallback quando Brapi não retorna proximo_dy)
+      pool.query(
+        `SELECT DISTINCT ON (ticker) ticker, value_per_share, ex_date, payment_date
+         FROM dividends
+         WHERE ticker = ANY($1) AND user_id = $2
+           AND DATE_TRUNC('month', payment_date) = DATE_TRUNC('month', NOW())
+         ORDER BY ticker, payment_date DESC`,
+        [tickers, userId]
+      ),
+      // Próximo rendimento via Brapi (em paralelo, sem bloquear)
+      Promise.all(fiis.map(f => getProximoRendimento(f.ticker).then(v => [f.ticker, v]))),
     ]);
 
-    // Busca perfil do usuário para score personalizado
-    let perfilUsuario = null;
-    try {
-      const { rows: profRows } = await pool.query(
-        'SELECT perfil_tipo, wizard_respostas FROM user_profiles WHERE user_id = $1',
-        [userId]
-      );
-      if (profRows.length) {
-        perfilUsuario = profRows[0].perfil_tipo
-          || profRows[0].wizard_respostas?.objetivo
-          || null;
-      }
-    } catch (_) {}
+    const marketMap  = Object.fromEntries(market.map(m => [m.ticker, m]));
+    const consistMap = Object.fromEntries(consistRows.map(r => [r.ticker, parseFloat(r.consistency)]));
+    const divMesMap  = Object.fromEntries(divMesRows.map(r => [r.ticker, r]));
+    const proximoMap = Object.fromEntries(proximoResults);
 
     const result = fiis.map(f => {
-      const live    = precos[f.ticker]    || {};
-      const db      = marketMap[f.ticker] || {};
-      const enrich  = enrichedMap[f.ticker] || {};
-      const dados = {
-        price:      live.price      ?? db.price      ?? null,
-        dy_12m:     live.dy_12m     ?? db.dy_12m     ?? null,
-        pvp:        enrich.pvp      ?? live.pvp      ?? db.pvp      ?? null,
-        liquidity:  enrich.liquidity ?? live.liquidity ?? db.liquidity ?? null,
-        properties: enrich.properties ?? live.properties ?? db.properties ?? null,
-        vacancy:    enrich.vacancy  ?? live.vacancy  ?? db.vacancy  ?? null,
-        div_growth: enrich.div_growth ?? null,
-        segment:    live.segment    ?? f.segment     ?? null,
-      };
-      const { score }   = calcularScore(dados);
-      const scorePerfil = perfilUsuario ? calcularScorePerfil(dados, perfilUsuario) : null;
+      const live = precos[f.ticker]    || {};
+      const db   = marketMap[f.ticker] || {};
+
+      // Consistência: local (baseada nos dividendos registrados pelo usuário) tem prioridade
+      const consistency = consistMap[f.ticker] ?? db.consistency ?? 0;
+
+      // Score e segmento vêm da tabela central (calculado 1x/dia pela varredura)
+      // Fallback: se o FII ainda não está em fiis_market, calcula on-the-fly
+      let score           = db.score    ?? null;
+      let segmento        = db.segmento ?? null;
+      let score_breakdown = db.score_breakdown ?? null;
+      let action          = db.action   ?? null;
+
+      if (score == null) {
+        const dadosFallback = {
+          ticker: f.ticker, dy_12m: live.dy_12m ?? null,
+          pvp: live.pvp ?? null, liquidity: live.liquidity ?? null, consistency,
+        };
+        const calc = calcularScore(dadosFallback);
+        score = calc.score; segmento = calc.segmento;
+        score_breakdown = calc.score_breakdown; action = getAction(score);
+      }
+
       return {
         ...f,
-        ...db,
-        ...dados,
-        score,
-        scorePerfil,
-        perfil: perfilUsuario,
-        action: getAction(score),
-        consistency: consistMap[f.ticker] ?? db.consistency ?? 0,
-        proximo_dy_valor:  proximoMap[f.ticker]?.valor    ?? null,
-        proximo_dy_com:    proximoMap[f.ticker]?.data_com ?? null,
-        proximo_dy_pgto:   proximoMap[f.ticker]?.data_pgto ?? null,
-        proximo_dy_recente: proximoMap[f.ticker]?.recente ?? false,
-        data_quality: enrich._stale ? 'stale' : 'fresh',
+        // Dados de mercado da tabela central
+        name:         db.name        ?? f.name        ?? null,
+        price:        live.price     ?? db.price      ?? null,
+        dy_12m:       live.dy_12m    ?? db.dy_12m     ?? null,
+        pvp:          live.pvp       ?? db.pvp        ?? null,
+        liquidity:    db.liquidity   ?? null,
+        net_worth:    db.net_worth   ?? null,
+        vacancy:      db.vacancy     ?? null,
+        properties:   db.properties  ?? null,
+        wault:        db.wault       ?? null,
+        leverage:     db.leverage    ?? null,
+        div_growth:   db.div_growth  ?? null,
+        // Score unificado
+        score, segmento, score_breakdown, cobertura_pct: db.cobertura_pct ?? null,
+        action, consistency,
+        score_updated_at: db.score_updated_at ?? null,
+        // Proventos do usuário
+        proximo_dy_valor:   proximoMap[f.ticker]?.valor    ?? null,
+        proximo_dy_com:     proximoMap[f.ticker]?.data_com ?? null,
+        proximo_dy_pgto:    proximoMap[f.ticker]?.data_pgto ?? null,
+        proximo_dy_recente: proximoMap[f.ticker]?.recente  ?? false,
+        div_mes_valor:  divMesMap[f.ticker]?.value_per_share ?? null,
+        div_mes_com:    divMesMap[f.ticker]?.ex_date         ?? null,
+        div_mes_pgto:   divMesMap[f.ticker]?.payment_date    ?? null,
       };
     });
     res.json(result);
@@ -725,8 +734,8 @@ router.get('/proventos/:ticker', validateTicker, async (req, res) => {
 router.post('/proventos/sync', async (req, res) => {
   const userId = getUserId(req);
   try {
-    const { sincronizarTodosProventos } = require('../scheduler/fii-proventos-sync');
-    const result = await sincronizarTodosProventos(userId);
+    const { sincronizarProventosUsuario } = require('../scheduler/fii-proventos-sync');
+    const result = await sincronizarProventosUsuario(userId);
     res.json({ ok: true, sincronizados: result.sincronizados, tickers: result.tickers });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -807,8 +816,8 @@ router.post('/dividends/import-brapi', importLimiter, async (req, res) => {
       }
     }
 
-    const { sincronizarTodosProventos } = require('../scheduler/fii-proventos-sync');
-    const syncResult = await sincronizarTodosProventos(userId);
+    const { sincronizarProventosUsuario } = require('../scheduler/fii-proventos-sync');
+    const syncResult = await sincronizarProventosUsuario(userId);
 
     res.json({ ok: true, importados: totalImportados, tickers: fiis.length - erros.length, erros, sincronizados: syncResult.sincronizados });
   } catch (err) {
@@ -986,11 +995,10 @@ async function rodarVarredura() {
 
 // GET /api/fiis/top10 — retorna top 10 do cache ou roda varredura
 // ── GET /api/fiis/market-for-profile ──────────────────────────────────────────
-// Retorna top FIIs + síntese personalizados para o perfil dual do usuário autenticado.
-// Cache por célula (perfil × momento), TTL 1h — independente do cache global.
+// Retorna FIIs recomendados para o perfil dual do usuário, lidos de fiis_market.
+// Cache por célula (perfil × momento), TTL 1h para síntese IA.
 router.get('/market-for-profile', authMiddleware, async (req, res) => {
   try {
-    // 1. Ler perfil dual do usuário
     const userId = req.userId;
     const { rows } = await pool.query(
       `SELECT investor_profile_v2, financial_moment
@@ -1000,72 +1008,65 @@ router.get('/market-for-profile', authMiddleware, async (req, res) => {
     const perfil  = rows[0]?.investor_profile_v2 || null;
     const momento = rows[0]?.financial_moment    || null;
 
-    // Se não tem perfil completo, devolve top50 genérico sem personalização
+    // Lê fiis_market (fonte única) com score > 0 e preço disponível
+    const { rows: todos } = await pool.query(
+      `SELECT ticker, name, price, dy_12m, pvp, liquidity, vacancy, properties,
+              wault, leverage, div_growth, consistency,
+              score, action, segmento, cobertura_pct, score_breakdown, score_updated_at
+       FROM fiis_market
+       WHERE price > 0 AND score IS NOT NULL
+       ORDER BY score DESC`
+    );
+
+    // Sem perfil completo — devolve top 20 por score sem filtros
     if (!perfil || !momento) {
-      const top50 = top10Cache?.data?.top50 || [];
-      return res.json({ top: top50.slice(0, 20), sintese: null, perfil: null, momento: null, personalizado: false });
+      return res.json({
+        top: todos.slice(0, 20),
+        sintese: null, perfil: null, momento: null, personalizado: false,
+      });
     }
 
     const cacheKey = `${perfil}_${momento}`;
 
-    // 2. Cache hit
-    if (profileSinteseCache[cacheKey] && Date.now() - profileSinteseCache[cacheKey].ts < PROFILE_SINTESE_TTL) {
-      return res.json({ ...profileSinteseCache[cacheKey].data, from_cache: true });
-    }
-
-    // 3. Garantir que o top50 global existe
-    if (!top10Cache?.data?.top50?.length) {
-      // Roda varredura se não houver cache global ainda
-      await rodarVarredura();
-    }
-    const top50 = top10Cache?.data?.top50 || [];
-
-    if (!top50.length) {
-      return res.status(503).json({ error: 'Base de FIIs ainda não disponível. Tente novamente em alguns minutos.' });
-    }
-
-    // 4. Aplicar filtros da matriz perfil × momento
     const matrix = getRecommendationConfig(perfil, momento);
 
-    let eligible = [...top50];
-
     if (matrix.pausar) {
-      // Momento restritivo — não filtra FIIs, mas avisa para não aportar
       const sintese = await gerarSintesePersonalizada(perfil, momento, [], {}).catch(() => null)
         || 'Seu momento financeiro atual recomenda pausar novos aportes em FIIs. Priorize a reserva de emergência e a quitação de dívidas.';
-      const payload = { top: eligible.slice(0, 20), sintese, perfil, momento, personalizado: true, pausar: true, mensagem: matrix.mensagem };
+      const payload = { top: todos.slice(0, 20), sintese, perfil, momento, personalizado: true, pausar: true, mensagem: matrix.mensagem };
       profileSinteseCache[cacheKey] = { data: payload, ts: Date.now() };
       return res.json(payload);
     }
 
-    // Filtro de segmento
+    // Filtros da matriz perfil × momento
+    let eligible = [...todos];
+
     if (matrix.segmentos?.length && !matrix.segmentos.includes('todos')) {
       eligible = eligible.filter(f => {
-        const seg = normalizeSegmento(f.segment);
+        // Usa segmento calculado pelo scorer (campo segmento), com fallback normalizado
+        const seg = f.segmento || normalizeSegmento(f.segment);
         return !seg || matrix.segmentos.includes(seg);
       });
     }
-    // Filtro de DY mínimo
-    if (matrix.minDY) eligible = eligible.filter(f => (f.dy_12m || 0) >= matrix.minDY);
-    // Filtro de P/VP máximo
+    if (matrix.minDY)              eligible = eligible.filter(f => (f.dy_12m || 0) >= matrix.minDY);
     if (matrix.maxPVP && matrix.maxPVP < 9) eligible = eligible.filter(f => (f.pvp || 99) <= matrix.maxPVP);
 
-    // 5. Ordenação: focoDY → por DY; caso contrário por score geral
-    if (matrix.focoDY) {
-      eligible.sort((a, b) => (b.dy_12m || 0) - (a.dy_12m || 0));
+    // Ordenação: focoDY → por DY; caso contrário já está por score DESC (da query)
+    if (matrix.focoDY) eligible.sort((a, b) => (b.dy_12m || 0) - (a.dy_12m || 0));
+
+    // Garante mínimo de 5 FIIs mesmo com filtros restritivos
+    const top = eligible.length >= 5 ? eligible.slice(0, 20) : todos.slice(0, 20);
+
+    // Síntese IA — usa cache por célula de perfil
+    let sintese = null;
+    if (profileSinteseCache[cacheKey] && Date.now() - profileSinteseCache[cacheKey].ts < PROFILE_SINTESE_TTL) {
+      sintese = profileSinteseCache[cacheKey].sintese;
+    } else {
+      sintese = await gerarSintesePersonalizada(perfil, momento, top.slice(0, 10), {}).catch(() => null);
+      profileSinteseCache[cacheKey] = { sintese, ts: Date.now() };
     }
-    // (já ordenado por score do top50 para o caso !focoDY)
 
-    // Garante pelo menos alguns FIIs mesmo se filtros forem muito restritivos
-    const top = eligible.length >= 5 ? eligible.slice(0, 20) : top50.slice(0, 20);
-
-    // 6. Síntese personalizada
-    const sintese = await gerarSintesePersonalizada(perfil, momento, top.slice(0, 10), {}).catch(() => null);
-
-    const payload = { top, sintese, perfil, momento, personalizado: true, pausar: false, matrix };
-    profileSinteseCache[cacheKey] = { data: payload, ts: Date.now() };
-
-    res.json(payload);
+    res.json({ top, sintese, perfil, momento, personalizado: true, pausar: false, matrix });
   } catch (err) {
     console.error('[market-for-profile]', err.message);
     res.status(500).json({ error: err.message });
