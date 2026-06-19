@@ -994,6 +994,24 @@ async function rodarVarredura() {
 }
 
 // GET /api/fiis/top10 — retorna top 10 do cache ou roda varredura
+// Enriquece lista de FIIs com dados de último/próximo rendimento (Brapi + StatusInvest fallback)
+async function enriquecerComRendimento(fiis) {
+  const results = await Promise.all(
+    fiis.map(f => getProximoRendimento(f.ticker).then(r => [f.ticker, r]).catch(() => [f.ticker, null]))
+  );
+  const map = Object.fromEntries(results);
+  return fiis.map(f => {
+    const r = map[f.ticker];
+    return {
+      ...f,
+      ultimo_dy_valor: r?.valor    ?? null,
+      ultimo_dy_com:   r?.data_com ?? null,
+      ultimo_dy_pgto:  r?.data_pgto ?? null,
+      ultimo_dy_recente: r?.recente ?? false,
+    };
+  });
+}
+
 // ── GET /api/fiis/market-for-profile ──────────────────────────────────────────
 // Retorna FIIs recomendados para o perfil dual do usuário, lidos de fiis_market.
 // Cache por célula (perfil × momento), TTL 1h para síntese IA.
@@ -1020,8 +1038,9 @@ router.get('/market-for-profile', authMiddleware, async (req, res) => {
 
     // Sem perfil completo — devolve top 20 por score sem filtros
     if (!perfil || !momento) {
+      const top20 = await enriquecerComRendimento(todos.slice(0, 20));
       return res.json({
-        top: todos.slice(0, 20),
+        top: top20,
         sintese: null, perfil: null, momento: null, personalizado: false,
       });
     }
@@ -1055,7 +1074,8 @@ router.get('/market-for-profile', authMiddleware, async (req, res) => {
     if (matrix.focoDY) eligible.sort((a, b) => (b.dy_12m || 0) - (a.dy_12m || 0));
 
     // Garante mínimo de 5 FIIs mesmo com filtros restritivos
-    const top = eligible.length >= 5 ? eligible.slice(0, 20) : todos.slice(0, 20);
+    const topRaw = eligible.length >= 5 ? eligible.slice(0, 20) : todos.slice(0, 20);
+    const top = await enriquecerComRendimento(topRaw);
 
     // Síntese IA — usa cache por célula de perfil
     let sintese = null;
