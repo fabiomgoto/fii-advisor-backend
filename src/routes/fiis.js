@@ -1276,16 +1276,56 @@ let _siCache = null;
 let _siCacheTs = 0;
 const SI_TTL = 6 * 60 * 60 * 1000;
 
-// Busca próximo/último rendimento via Brapi Pro (substitui scraping do StatusInvest).
+// Busca próximo/último rendimento: Brapi primeiro, StatusInvest como fallback.
 async function getProximoRendimento(ticker) {
+  // 1. Tenta Brapi
   try {
     const { data } = await axios.get(
       `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}&dividends=true`,
       { timeout: 10000 }
     );
     const divs = data?.results?.[0]?.dividendsData?.cashDividends || [];
-    return extrairProximoRendimento(divs);
-  } catch (_) { return null; }
+    const resultado = extrairProximoRendimento(divs);
+    if (resultado) return resultado;
+  } catch (_) {}
+
+  // 2. Fallback: StatusInvest companytickerprovents
+  try {
+    const { data } = await axios.get(
+      `https://statusinvest.com.br/fii/companytickerprovents?ticker=${ticker}&chartProv498702702TypeRange=0`,
+      { timeout: 8000, headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json', 'Referer': 'https://statusinvest.com.br/' } }
+    );
+    const models = data?.assetEarningsModels || [];
+    if (!models.length) return null;
+
+    // Converte dd/MM/yyyy para yyyy-MM-dd
+    const parseDate = (s) => {
+      if (!s) return null;
+      const [d, m, y] = s.split('/');
+      return `${y}-${m}-${d}`;
+    };
+
+    const hoje = new Date().toISOString().substring(0, 10);
+    const limite = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
+
+    const parsed = models
+      .map(m => ({
+        valor:    parseFloat(m.v) || 0,
+        data_com: parseDate(m.ed),
+        data_pgto: parseDate(m.pd),
+      }))
+      .filter(p => p.data_pgto && p.valor > 0);
+
+    // Prioridade 1: pagamento futuro mais próximo
+    const futuros = parsed.filter(p => p.data_pgto >= hoje).sort((a, b) => a.data_pgto.localeCompare(b.data_pgto));
+    if (futuros.length) return { ...futuros[0], recente: false };
+
+    // Prioridade 2: pagamento recente (últimos 35 dias)
+    const recentes = parsed.filter(p => p.data_pgto < hoje && p.data_pgto >= limite).sort((a, b) => b.data_pgto.localeCompare(a.data_pgto));
+    if (recentes.length) return { ...recentes[0], recente: true };
+  } catch (_) {}
+
+  return null;
 }
 
 async function getStatusInvestData(ticker) {
