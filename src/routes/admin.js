@@ -395,7 +395,7 @@ router.post('/errors/frontend', async (req, res) => {
   }
 });
 
-// POST /api/admin/scoring/run — trigger manual do scoring segmentado
+// POST /api/admin/scoring/run — rescora todos os FIIs já em fiis_market
 router.post('/scoring/run', async (req, res) => {
   res.json({ ok: true, message: 'Scoring iniciado em background' });
   try {
@@ -403,6 +403,18 @@ router.post('/scoring/run', async (req, res) => {
     await rodarScoringDiario();
   } catch (err) {
     console.error('[admin/scoring/run] erro:', err.message);
+  }
+});
+
+// POST /api/admin/varredura-completa — importa todos os FIIs do Fundamentus e aplica score
+router.post('/varredura-completa', async (req, res) => {
+  try {
+    const { rodarVarreduraCompleta } = require('../scheduler/fii-daily-scorer');
+    const result = await rodarVarreduraCompleta();
+    res.json({ ok: true, ...result });
+  } catch (err) {
+    console.error('[admin/varredura-completa] erro:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
