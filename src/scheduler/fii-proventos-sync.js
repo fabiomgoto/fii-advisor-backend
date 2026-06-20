@@ -42,9 +42,13 @@ async function sincronizarProventos(userId, ticker, aportes) {
     if (!dataCom || rate <= 0) continue;
 
     const cotas = cotasNaData(aportes, dataCom);
-    if (cotas <= 0) continue; // sem cotas nesta data
+    if (cotas <= 0) continue;
 
     const totalRecebido = parseFloat((cotas * rate).toFixed(2));
+
+    // Competência = mês do pagamento (quando o dinheiro entra na conta)
+    // Fallback para data COM se payment_date não disponível
+    const competencia = dataPgto || dataCom;
 
     try {
       await pool.query(
@@ -58,7 +62,7 @@ async function sincronizarProventos(userId, ticker, aportes) {
            total_recebido = EXCLUDED.total_recebido,
            data_com       = EXCLUDED.data_com,
            updated_at     = NOW()`,
-        [userId, ticker.toUpperCase(), dataCom, dataPgto, rate, cotas, totalRecebido]
+        [userId, ticker.toUpperCase(), competencia, dataCom, rate, cotas, totalRecebido]
       );
       sincronizados++;
     } catch (e) {
