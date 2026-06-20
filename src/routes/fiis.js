@@ -1374,14 +1374,16 @@ const SI_TTL = 6 * 60 * 60 * 1000;
 // Busca próximo/último rendimento: Brapi primeiro, StatusInvest como fallback.
 async function getProximoRendimento(ticker) {
   // 1. Tenta Brapi
+  let brapiResult = null;
   try {
     const { data } = await axios.get(
       `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}&dividends=true`,
       { timeout: 10000 }
     );
     const divs = data?.results?.[0]?.dividendsData?.cashDividends || [];
-    const resultado = extrairProximoRendimento(divs);
-    if (resultado) return resultado;
+    brapiResult = extrairProximoRendimento(divs);
+    // Se Brapi tem pagamento futuro (não apenas recente), usa direto
+    if (brapiResult && !brapiResult.recente) return brapiResult;
   } catch (_) {}
 
   // 2. Fallback: StatusInvest companytickerprovents
@@ -1420,7 +1422,8 @@ async function getProximoRendimento(ticker) {
     if (recentes.length) return { ...recentes[0], recente: true };
   } catch (_) {}
 
-  return null;
+  // 3. Último recurso: resultado recente da Brapi (se StatusInvest não retornou nada melhor)
+  return brapiResult || null;
 }
 
 async function getStatusInvestData(ticker) {
