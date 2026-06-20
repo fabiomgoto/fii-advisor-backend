@@ -43,7 +43,7 @@ function extrairProximoRendimento(cashDividends = []) {
 
 /**
  * Converte cashDividends do Brapi para o formato da tabela `dividends`.
- * Deduplica por mês (mantém apenas um registro por mês-ano, o de maior exDate).
+ * Deduplica por mês e corrige valores pré-desdobramento automaticamente.
  */
 function brapiDividsToDB(cashDividends = []) {
   const parsed = cashDividends
@@ -57,12 +57,30 @@ function brapiDividsToDB(cashDividends = []) {
   // Deduplica: um registro por mês-ano (mantém o de maior exDate no mês)
   const porMes = {};
   for (const d of parsed) {
-    const mesKey = d.exDate.substring(0, 7); // YYYY-MM
+    const mesKey = d.exDate.substring(0, 7);
     if (!porMes[mesKey] || d.exDate > porMes[mesKey].exDate) {
       porMes[mesKey] = d;
     }
   }
-  return Object.values(porMes).sort((a, b) => a.exDate.localeCompare(b.exDate));
+  const lista = Object.values(porMes).sort((a, b) => a.exDate.localeCompare(b.exDate));
+
+  // Detecta e corrige desdobramento: se os últimos 6 meses têm média M
+  // e há registros antigos com valor > 5×M, divide pelo fator mais provável
+  if (lista.length >= 8) {
+    const recentes = lista.slice(-6);
+    const mediaRecente = recentes.reduce((s, d) => s + d.rate, 0) / recentes.length;
+    if (mediaRecente > 0) {
+      for (const d of lista) {
+        const ratio = d.rate / mediaRecente;
+        if (ratio > 3) {
+          const fator = Math.round(ratio);
+          d.rate = parseFloat((d.rate / fator).toFixed(6));
+        }
+      }
+    }
+  }
+
+  return lista;
 }
 
 /**
