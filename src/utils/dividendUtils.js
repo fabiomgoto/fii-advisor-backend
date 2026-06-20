@@ -43,15 +43,26 @@ function extrairProximoRendimento(cashDividends = []) {
 
 /**
  * Converte cashDividends do Brapi para o formato da tabela `dividends`.
+ * Deduplica por mês (mantém apenas um registro por mês-ano, o de maior exDate).
  */
 function brapiDividsToDB(cashDividends = []) {
-  return cashDividends
+  const parsed = cashDividends
     .map(d => ({
       exDate:      d.lastDatePrior?.substring(0, 10) || null,
       paymentDate: d.paymentDate?.substring(0, 10)   || null,
       rate:        parseFloat(d.rate) || 0,
     }))
     .filter(d => d.exDate && d.rate > 0);
+
+  // Deduplica: um registro por mês-ano (mantém o de maior exDate no mês)
+  const porMes = {};
+  for (const d of parsed) {
+    const mesKey = d.exDate.substring(0, 7); // YYYY-MM
+    if (!porMes[mesKey] || d.exDate > porMes[mesKey].exDate) {
+      porMes[mesKey] = d;
+    }
+  }
+  return Object.values(porMes).sort((a, b) => a.exDate.localeCompare(b.exDate));
 }
 
 /**

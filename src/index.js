@@ -430,6 +430,22 @@ async function runMigrations() {
     WHERE top3::text LIKE '%score_breakdown%'
   `);
 
+  // ── Cleanup: deduplica dividendos (um por mês/ticker/user) ──────────────────
+  await run('dedup_dividends_by_month', `
+    DELETE FROM dividends
+    WHERE id IN (
+      SELECT id FROM (
+        SELECT id,
+          ROW_NUMBER() OVER (
+            PARTITION BY user_id, ticker, TO_CHAR(ex_date, 'YYYY-MM')
+            ORDER BY ex_date DESC
+          ) AS rn
+        FROM dividends
+      ) ranked
+      WHERE rn > 1
+    )
+  `);
+
   console.log('[MIGRATIONS] concluídas');
 }
 
