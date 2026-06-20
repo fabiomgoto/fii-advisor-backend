@@ -832,13 +832,12 @@ router.post('/dividends/import-brapi', importLimiter, async (req, res) => {
 
     for (const { ticker } of fiis) {
       try {
+        // 1. Brapi: histórico completo
         const { data } = await axios.get(
           `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}&dividends=true`,
           { timeout: 15000 }
         );
         const divs = data?.results?.[0]?.dividendsData?.cashDividends || [];
-        if (!divs.length) continue;
-
         const lista = brapiDividsToDB(divs);
         let inseridos = 0;
         for (const { exDate, paymentDate, rate } of lista) {
@@ -851,8 +850,37 @@ router.post('/dividends/import-brapi', importLimiter, async (req, res) => {
           );
           inseridos++;
         }
+
+        // 2. StatusInvest: complementa mês atual se Brapi não tem
+        const mesAtual = new Date().toISOString().substring(0, 7);
+        const temMesAtual = lista.some(d => d.exDate?.startsWith(mesAtual));
+        if (!temMesAtual) {
+          try {
+            const si = await axios.get(
+              `https://statusinvest.com.br/fii/companytickerprovents?ticker=${ticker}&chartProv498702702TypeRange=0`,
+              { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0', 'Accept': 'application/json', 'Referer': 'https://statusinvest.com.br/' } }
+            );
+            const models = si.data?.assetEarningsModels || [];
+            for (const m of models.slice(0, 2)) {
+              const ed = m.ed, pd = m.pd, v = parseFloat(m.v || 0);
+              if (!ed || !v) continue;
+              const partsEd = ed.split('/'), partsPd = pd?.split('/');
+              if (partsEd.length !== 3) continue;
+              const exDate = `${partsEd[2]}-${partsEd[1]}-${partsEd[0]}`;
+              const payDate = partsPd?.length === 3 ? `${partsPd[2]}-${partsPd[1]}-${partsPd[0]}` : null;
+              await pool.query(
+                `INSERT INTO dividends (user_id, ticker, ex_date, payment_date, value_per_share)
+                 VALUES ($1,$2,$3,$4,$5)
+                 ON CONFLICT (user_id, ticker, ex_date) DO NOTHING`,
+                [userId, ticker.toUpperCase(), exDate, payDate, v]
+              );
+              inseridos++;
+            }
+          } catch (_) {}
+        }
+
         totalImportados += inseridos;
-        console.log(`[IMPORT] ${ticker}: ${inseridos} dividendos (brapi)`);
+        console.log(`[IMPORT] ${ticker}: ${inseridos} dividendos (brapi+si)`);
       } catch (e) {
         console.warn(`[IMPORT] Erro ${ticker}:`, e.message);
         erros.push(ticker);
