@@ -836,7 +836,7 @@ const PROFILE_SINTESE_TTL = 60 * 60 * 1000; // 1h
 
 // Blacklist permanente — FIIs com problemas jurídicos ou em recuperação judicial
 // Inclui tickers extintos/incorporados que não existem mais na B3
-const BLACKLIST = ['XPIN11', 'FIGS11', 'RBVO11', 'NVHO11', 'CVBI11'];
+const BLACKLIST = ['XPIN11', 'FIGS11', 'RBVO11', 'NVHO11', 'CVBI11', 'CACR11'];
 
 function aplicarFiltros(ticker, d) {
   if (BLACKLIST.includes(ticker)) {
@@ -1026,14 +1026,18 @@ router.get('/market-for-profile', authMiddleware, async (req, res) => {
     const perfil  = rows[0]?.investor_profile_v2 || null;
     const momento = rows[0]?.financial_moment    || null;
 
-    // Lê fiis_market (fonte única) com score > 0 e preço disponível
+    // Lê fiis_market (fonte única) com filtros de sanidade
     const { rows: todos } = await pool.query(
       `SELECT ticker, name, price, dy_12m, pvp, liquidity, vacancy, properties,
               wault, leverage, div_growth, consistency,
               score, action, segmento, cobertura_pct, score_breakdown, score_updated_at
        FROM fiis_market
        WHERE price > 0 AND score IS NOT NULL
-       ORDER BY score DESC`
+         AND (dy_12m IS NULL OR dy_12m <= 25)
+         AND price >= 10
+         AND ticker NOT IN (${BLACKLIST.map((_, i) => `$${i + 1}`).join(',')})
+       ORDER BY score DESC`,
+      BLACKLIST
     );
 
     // Sem perfil completo — devolve top 20 por score sem filtros

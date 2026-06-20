@@ -323,8 +323,17 @@ async function runMigrations() {
       ON profile_score_history(user_id, score_type, calculated_at DESC)
   `);
 
-  // ── Migration 010: Reset perfil (one-time, já aplicado) ─────────────────────
-  // Removido: resetava wizard_done em cada startup, impedindo login.
+  // ── Migration 010: Restaura wizard flags de usuários com perfil completo ────
+  // Corrige dano da migration destrutiva anterior (que zerava flags a cada startup)
+  await run('restore_wizard_flags', `
+    UPDATE user_profiles
+    SET financial_wizard_done = TRUE,
+        investor_wizard_done  = TRUE
+    WHERE onboarding_completo = TRUE
+      AND financial_moment IS NOT NULL
+      AND investor_profile_v2 IS NOT NULL
+      AND (financial_wizard_done = FALSE OR investor_wizard_done = FALSE)
+  `);
 
   // ── Migration 009a: Portfolio Snapshots ──────────────────────────────────
   await run('portfolio_snapshots_table', `
