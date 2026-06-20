@@ -462,18 +462,43 @@ router.get('/rentabilidade/:ticker', validateTicker, async (req, res) => {
       totalCotas += parseFloat(a.quantity);
     }
 
-    // Calcula proventos usando cotas que o usuário tinha na data COM de cada dividendo
-    const totalDividendos = divs.reduce((acc, d) => {
-      const dataCom = (d.ex_date || '').toString().substring(0, 10);
-      const cotasNaData = aportes
-        .filter(a => (a.date || '').toString().substring(0, 10) <= dataCom)
-        .reduce((s, a) => s + parseFloat(a.quantity || 0), 0);
-      return acc + parseFloat(d.value_per_share) * cotasNaData;
-    }, 0);
+    // Calcula proventos individualizado por aporte
+    const aportesDetalhados = aportes.map(a => {
+      const dataAporte  = (a.date || '').toString().substring(0, 10);
+      const cotas       = parseFloat(a.quantity || 0);
+      const investido   = parseFloat(a.total || 0);
+      const precoMedio  = cotas > 0 ? investido / cotas : 0;
 
+      // Dividendos elegíveis: COM date >= data do aporte
+      const proventos = divs
+        .filter(d => (d.ex_date || '').toString().substring(0, 10) >= dataAporte)
+        .reduce((s, d) => s + parseFloat(d.value_per_share) * cotas, 0);
+
+      const valorAtualAporte = precoAtual ? cotas * precoAtual : null;
+      const retornoCapitalAporte = valorAtualAporte != null && investido > 0
+        ? ((valorAtualAporte - investido) / investido) * 100 : null;
+      const retornoTotalAporte = valorAtualAporte != null && investido > 0
+        ? ((valorAtualAporte + proventos - investido) / investido) * 100 : null;
+      const yieldOnCost = investido > 0
+        ? (proventos / investido) * 100 : null;
+
+      return {
+        ...a,
+        cotas,
+        investido,
+        precoMedio,
+        proventos,
+        valorAtual: valorAtualAporte,
+        retornoCapital: retornoCapitalAporte,
+        retornoTotal: retornoTotalAporte,
+        yieldOnCost,
+      };
+    });
+
+    const totalDividendos = aportesDetalhados.reduce((s, a) => s + a.proventos, 0);
     const valorAtual = precoAtual ? totalCotas * precoAtual : null;
-    const retornoCapital = valorAtual && valorAtual > 0 ? ((valorAtual - totalInvestido) / totalInvestido) * 100 : null;
-    const retornoTotal = totalInvestido > 0 && valorAtual > 0 ? (((valorAtual + totalDividendos - totalInvestido) / totalInvestido) * 100) : null;
+    const retornoCapital = valorAtual != null && totalInvestido > 0 ? ((valorAtual - totalInvestido) / totalInvestido) * 100 : null;
+    const retornoTotal = valorAtual != null && totalInvestido > 0 ? (((valorAtual + totalDividendos - totalInvestido) / totalInvestido) * 100) : null;
 
     res.json({
       ticker,
@@ -484,7 +509,7 @@ router.get('/rentabilidade/:ticker', validateTicker, async (req, res) => {
       valorAtual,
       retornoCapital,
       retornoTotal,
-      aportes,
+      aportes: aportesDetalhados,
       dividendos: divs,
     });
   } catch (err) {
@@ -524,13 +549,14 @@ router.get('/rentabilidade', async (req, res) => {
       const cotas = ta.reduce((s, a) => s + parseFloat(a.quantity), 0);
       const investido = ta.reduce((s, a) => s + parseFloat(a.total), 0);
 
-      // Calcula proventos usando cotas na data COM de cada dividendo
-      const dividendos = td.reduce((s, d) => {
-        const dataCom = (d.ex_date || '').toString().substring(0, 10);
-        const cotasNaData = ta
-          .filter(a => (a.date || '').toString().substring(0, 10) <= dataCom)
-          .reduce((acc, a) => acc + parseFloat(a.quantity || 0), 0);
-        return s + parseFloat(d.value_per_share) * cotasNaData;
+      // Calcula proventos individualizado por aporte
+      const dividendos = ta.reduce((total, a) => {
+        const dataAporte = (a.date || '').toString().substring(0, 10);
+        const cotasAporte = parseFloat(a.quantity || 0);
+        const provAporte = td
+          .filter(d => (d.ex_date || '').toString().substring(0, 10) >= dataAporte)
+          .reduce((s, d) => s + parseFloat(d.value_per_share) * cotasAporte, 0);
+        return total + provAporte;
       }, 0);
 
       const preco = precosLive[ticker]?.price ?? null;
