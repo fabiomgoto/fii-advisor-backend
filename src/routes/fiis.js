@@ -462,10 +462,18 @@ router.get('/rentabilidade/:ticker', validateTicker, async (req, res) => {
       totalCotas += parseFloat(a.quantity);
     }
 
-    const totalDividendos = divs.reduce((acc, d) => acc + parseFloat(d.value_per_share) * totalCotas, 0);
+    // Calcula proventos usando cotas que o usuário tinha na data COM de cada dividendo
+    const totalDividendos = divs.reduce((acc, d) => {
+      const dataCom = (d.ex_date || '').toString().substring(0, 10);
+      const cotasNaData = aportes
+        .filter(a => (a.date || '').toString().substring(0, 10) <= dataCom)
+        .reduce((s, a) => s + parseFloat(a.quantity || 0), 0);
+      return acc + parseFloat(d.value_per_share) * cotasNaData;
+    }, 0);
+
     const valorAtual = precoAtual ? totalCotas * precoAtual : null;
     const retornoCapital = valorAtual && valorAtual > 0 ? ((valorAtual - totalInvestido) / totalInvestido) * 100 : null;
-    const retornoTotal = valorAtual && valorAtual > 0 ? (((valorAtual + totalDividendos - totalInvestido) / totalInvestido) * 100) : null;
+    const retornoTotal = totalInvestido > 0 && valorAtual > 0 ? (((valorAtual + totalDividendos - totalInvestido) / totalInvestido) * 100) : null;
 
     res.json({
       ticker,
@@ -515,7 +523,16 @@ router.get('/rentabilidade', async (req, res) => {
       const td = divs.filter(d => d.ticker === ticker);
       const cotas = ta.reduce((s, a) => s + parseFloat(a.quantity), 0);
       const investido = ta.reduce((s, a) => s + parseFloat(a.total), 0);
-      const dividendos = td.reduce((s, d) => s + parseFloat(d.value_per_share) * cotas, 0);
+
+      // Calcula proventos usando cotas na data COM de cada dividendo
+      const dividendos = td.reduce((s, d) => {
+        const dataCom = (d.ex_date || '').toString().substring(0, 10);
+        const cotasNaData = ta
+          .filter(a => (a.date || '').toString().substring(0, 10) <= dataCom)
+          .reduce((acc, a) => acc + parseFloat(a.quantity || 0), 0);
+        return s + parseFloat(d.value_per_share) * cotasNaData;
+      }, 0);
+
       const preco = precosLive[ticker]?.price ?? null;
       const atual = preco ? cotas * preco : null;
 
