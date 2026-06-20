@@ -657,10 +657,10 @@ router.get('/portfolio/snapshots', async (req, res) => {
 router.get('/proventos/resumo', async (req, res) => {
   const userId = getUserId(req);
   try {
-    // Total geral
+    // Total geral (somente proventos já pagos)
     const { rows: [tot] } = await pool.query(
       `SELECT COALESCE(SUM(total_recebido), 0) AS total_geral
-       FROM fii_proventos WHERE user_id = $1`,
+       FROM fii_proventos WHERE user_id = $1 AND competencia <= NOW()`,
       [userId]
     );
 
@@ -673,7 +673,7 @@ router.get('/proventos/resumo', async (req, res) => {
          MIN(c.date)::text        AS primeiro_aporte
        FROM fii_proventos p
        LEFT JOIN contributions c ON c.ticker = p.ticker AND c.user_id = p.user_id
-       WHERE p.user_id = $1
+       WHERE p.user_id = $1 AND p.competencia <= NOW()
        GROUP BY p.ticker ORDER BY total DESC`,
       [userId]
     );
@@ -681,7 +681,7 @@ router.get('/proventos/resumo', async (req, res) => {
     // Melhor mês
     const { rows: [melhorMes] } = await pool.query(
       `SELECT competencia, SUM(total_recebido) AS total
-       FROM fii_proventos WHERE user_id = $1
+       FROM fii_proventos WHERE user_id = $1 AND competencia <= NOW()
        GROUP BY competencia ORDER BY total DESC LIMIT 1`,
       [userId]
     );
@@ -692,6 +692,7 @@ router.get('/proventos/resumo', async (req, res) => {
          SELECT competencia, SUM(total_recebido) AS mes_total
          FROM fii_proventos
          WHERE user_id = $1
+           AND competencia <= NOW()
            AND competencia >= NOW() - INTERVAL '12 months'
          GROUP BY competencia
        ) t`,
@@ -732,7 +733,7 @@ router.get('/proventos', async (req, res) => {
            ticker,
            SUM(total_recebido) AS total_recebido
          FROM fii_proventos
-         WHERE user_id = $1
+         WHERE user_id = $1 AND competencia <= NOW()
          GROUP BY DATE_TRUNC('month', competencia), ticker
        )
        SELECT
@@ -763,7 +764,7 @@ router.get('/proventos/:ticker', validateTicker, async (req, res) => {
     const { rows } = await pool.query(
       `SELECT competencia, data_com, valor_por_cota, cotas_na_data, total_recebido, fonte
        FROM fii_proventos
-       WHERE user_id = $1 AND ticker = $2
+       WHERE user_id = $1 AND ticker = $2 AND competencia <= NOW()
        ORDER BY competencia DESC`,
       [userId, ticker]
     );
