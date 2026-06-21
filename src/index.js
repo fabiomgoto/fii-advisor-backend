@@ -32,6 +32,7 @@ app.use('/api/onboarding',          require('./routes/onboarding'));
 app.use('/api/recommendations',     require('./routes/recommendations'));
 app.use('/api/simulated-portfolio', require('./routes/simulatedPortfolio'));
 app.use('/api/admin',               require('./routes/admin'));
+app.use('/api/admin/brapi',         require('./routes/brapiAdmin'));
 app.use('/api/activity',            require('./routes/activity'));
 app.use(require('./middleware/errorHandler'));
 
@@ -443,6 +444,54 @@ async function runMigrations() {
         FROM dividends
       ) ranked
       WHERE rn > 1
+    )
+  `);
+
+  // ── Brapi shadow table + consumption log ────────────────────────────────────
+  await run('brapi_fii_cache_table', `
+    CREATE TABLE IF NOT EXISTS brapi_fii_cache (
+      ticker              VARCHAR(10)   PRIMARY KEY,
+      nome                TEXT,
+      segmento            TEXT,
+      preco               NUMERIC(12,4),
+      valor_patrimonial   NUMERIC(12,4),
+      pvp                 NUMERIC(8,4),
+      dy_12m              NUMERIC(8,4),
+      ultimo_dividendo    NUMERIC(10,6),
+      data_com            DATE,
+      data_pagamento      DATE,
+      dy_cagr             NUMERIC(8,4),
+      cota_cagr           NUMERIC(8,4),
+      vacancia_fisica     NUMERIC(6,4),
+      num_imoveis         INTEGER,
+      wault               NUMERIC(6,2),
+      liquidez_diaria     NUMERIC(18,2),
+      patrimonio_liquido  NUMERIC(18,2),
+      num_cotistas        INTEGER,
+      pl                  NUMERIC(10,4),
+      roe                 NUMERIC(8,4),
+      ev_ebitda           NUMERIC(10,4),
+      dividendos_historico JSONB         DEFAULT '[]',
+      fonte               VARCHAR(20)   DEFAULT 'brapi',
+      brapi_endpoint      TEXT,
+      campos_preenchidos  INTEGER,
+      campos_ausentes     TEXT[],
+      atualizado_em       TIMESTAMPTZ   NOT NULL DEFAULT NOW(),
+      expira_em           TIMESTAMPTZ   NOT NULL DEFAULT (NOW() + INTERVAL '24 hours'),
+      tentativas          INTEGER       DEFAULT 1
+    )
+  `);
+  await run('brapi_consumption_log_table', `
+    CREATE TABLE IF NOT EXISTS brapi_consumption_log (
+      id              SERIAL PRIMARY KEY,
+      chamado_em      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      endpoint        TEXT        NOT NULL,
+      tickers         TEXT[],
+      num_tickers     INTEGER,
+      status_http     INTEGER,
+      latencia_ms     INTEGER,
+      tokens_usados   INTEGER,
+      erro            TEXT
     )
   `);
 
