@@ -1579,7 +1579,8 @@ router.get('/:ticker/detail', validateTicker, async (req, res) => {
     // brapi: cotação atual + chart + 52w range
     let brapi = null;
     try {
-      const url = `https://brapi.dev/api/quote/${ticker}?range=${range}&interval=1d&token=${BRAPI_TOKEN}`;
+      const interval = range === '1y' ? '1wk' : '1d';
+      const url = `https://brapi.dev/api/quote/${ticker}?range=${range}&interval=${interval}&token=${BRAPI_TOKEN}`;
       const { data } = await axios.get(url, { timeout: 8000 });
       const q = data?.results?.[0];
       if (q) {
