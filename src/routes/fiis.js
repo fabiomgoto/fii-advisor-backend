@@ -897,6 +897,123 @@ router.post('/dividends/import-brapi', importLimiter, async (req, res) => {
   }
 });
 
+// ─── Benchmark ──────────────────────────────────────────────────────────────
+
+// GET /api/fiis/benchmark — compara carteira vs CDI, IBOV, Poupança
+router.get('/benchmark', authMiddleware, async (req, res) => {
+  const userId = getUserId(req);
+  try {
+    // 1. Buscar todos os aportes do usuário
+    const { rows: contribs } = await pool.query(
+      `SELECT date::text, quantity, ticker,
+              (quantity::numeric * price_paid::numeric) AS total
+       FROM contributions WHERE user_id = $1 ORDER BY date`,
+      [userId]
+    );
+    if (!contribs.length) return res.json({ series: [] });
+
+    // 2. Buscar IBOV mensal do Yahoo Finance
+    let ibovMap = {};
+    try {
+      const { data } = await axios.get(
+        'https://query1.finance.yahoo.com/v8/finance/chart/%5EBVSP?range=5y&interval=1mo',
+        { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0' } }
+      );
+      const r = data.chart.result[0];
+      r.timestamp.forEach((t, i) => {
+        const mes = new Date(t * 1000).toISOString().substring(0, 7);
+        const close = r.indicators.quote[0].close[i];
+        if (close) ibovMap[mes] = close;
+      });
+    } catch (_) {}
+
+    // 3. Gerar série mensal desde o primeiro aporte
+    const primeiroMes = contribs[0].date.substring(0, 7);
+    const hoje = new Date();
+    const meses = [];
+    let d = new Date(primeiroMes + '-01');
+    while (d <= hoje) {
+      meses.push(d.toISOString().substring(0, 7));
+      d.setMonth(d.getMonth() + 1);
+    }
+
+    // Taxas mensais aproximadas (BCB fora, uso Selic vigente)
+    const SELIC_MENSAL = {
+      '2021': 0.0037, '2022-01': 0.0073, '2022-02': 0.0073, '2022-03': 0.0073,
+      '2022-04': 0.0083, '2022-05': 0.0083, '2022-06': 0.0102, '2022-07': 0.0102,
+      '2022-08': 0.0108, '2022-09': 0.0108, '2022-10': 0.0108, '2022-11': 0.0108,
+      '2022-12': 0.0108, '2023': 0.0108,
+      '2023-08': 0.0102, '2023-09': 0.0098, '2023-10': 0.0098, '2023-11': 0.0094,
+      '2023-12': 0.0094, '2024-01': 0.0091, '2024-02': 0.0091, '2024-03': 0.0085,
+      '2024-04': 0.0085, '2024-05': 0.0083, '2024-06': 0.0083, '2024-07': 0.0083,
+      '2024-08': 0.0083, '2024-09': 0.0083, '2024-10': 0.0083, '2024-11': 0.0079,
+      '2024-12': 0.0091, '2025-01': 0.0100, '2025-02': 0.0108, '2025-03': 0.0108,
+      '2025-04': 0.0108, '2025-05': 0.0116, '2025-06': 0.0116, '2025': 0.0116,
+      '2026': 0.0116,
+    };
+
+    function getCdiMensal(mes) {
+      return SELIC_MENSAL[mes] ?? SELIC_MENSAL[mes.substring(0, 4)] ?? 0.0100;
+    }
+    function getPoupMensal(mes) {
+      const cdi = getCdiMensal(mes);
+      return cdi > 0.0069 ? 0.005 + (cdi * 0.7 - 0.005) * 0.3 : cdi * 0.7;
+    }
+
+    // 4. Simular: para cada mês, acumular aportes e rendimentos
+    let cdiTotal = 0, poupTotal = 0, ibovUnits = 0;
+    const aportesPorMes = {};
+    for (const c of contribs) {
+      const mes = c.date.substring(0, 7);
+      aportesPorMes[mes] = (aportesPorMes[mes] || 0) + parseFloat(c.total);
+    }
+
+    // Proventos acumulado (carteira real)
+    const { rows: provMensal } = await pool.query(
+      `SELECT TO_CHAR(competencia, 'YYYY-MM') AS mes, SUM(total_recebido) AS total
+       FROM fii_proventos WHERE user_id = $1 AND competencia <= NOW()
+       GROUP BY TO_CHAR(competencia, 'YYYY-MM') ORDER BY mes`,
+      [userId]
+    );
+    const provMap = Object.fromEntries(provMensal.map(r => [r.mes, parseFloat(r.total)]));
+
+    // Valor da carteira por mês (investido + proventos acumulados)
+    let investidoAcum = 0, provAcum = 0;
+    const series = [];
+
+    for (const mes of meses) {
+      const aporte = aportesPorMes[mes] || 0;
+      investidoAcum += aporte;
+      provAcum += provMap[mes] || 0;
+
+      // CDI: cada aporte rende CDI composto desde o mês do aporte
+      cdiTotal = (cdiTotal + aporte) * (1 + getCdiMensal(mes));
+
+      // Poupança
+      poupTotal = (poupTotal + aporte) * (1 + getPoupMensal(mes));
+
+      // IBOV: compra unidades do índice no mês do aporte
+      const ibovPrice = ibovMap[mes];
+      if (aporte > 0 && ibovPrice) ibovUnits += aporte / ibovPrice;
+      const ibovValor = ibovPrice ? ibovUnits * ibovPrice : null;
+
+      series.push({
+        mes,
+        investido: Math.round(investidoAcum),
+        carteira:  Math.round(investidoAcum + provAcum),
+        cdi:       Math.round(cdiTotal),
+        poupanca:  Math.round(poupTotal),
+        ibov:      ibovValor ? Math.round(ibovValor) : null,
+      });
+    }
+
+    res.json({ series });
+  } catch (err) {
+    console.error('[benchmark]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── TOP 10 ──────────────────────────────────────────────────────────────────
 
 let top10Cache = null;
