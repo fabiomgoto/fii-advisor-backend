@@ -1559,10 +1559,10 @@ async function getStatusInvestData(ticker) {
   } catch (_) { return null; }
 }
 
-// GET /api/fiis/:ticker/detail?range=1mo|3mo
+// GET /api/fiis/:ticker/detail?range=1mo|3mo|1y
 router.get('/:ticker/detail', validateTicker, async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
-  const range  = ['1mo', '3mo'].includes(req.query.range) ? req.query.range : '1mo';
+  const range  = ['1mo', '3mo', '1y'].includes(req.query.range) ? req.query.range : '1mo';
   try {
     const [marketRes, enrichedRes, dadosRes, si, proximo] = await Promise.all([
       pool.query('SELECT * FROM fiis_market WHERE ticker = $1', [ticker]),
