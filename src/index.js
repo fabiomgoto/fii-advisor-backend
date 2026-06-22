@@ -2,7 +2,7 @@ require('dotenv').config();
 const express = require('express');
 const cors    = require('cors');
 const helmet  = require('helmet');
-const { generalLimiter } = require('./middleware/rateLimiter');
+const { globalLimiter, carteiraLimiter, rankingLimiter, aiLimiter } = require('./middleware/rateLimiter');
 
 const app  = express();
 const PORT = process.env.PORT || 3002;
@@ -23,9 +23,16 @@ app.use(helmet({
 app.use(cors({ origin: true, methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'] }));
 app.options('*', cors({ origin: true }));
 app.use(express.json());
-app.use(generalLimiter);
+app.use('/api', globalLimiter);
 
-// ── Rotas ─────────────────────────────────────────────────────────────────────
+// ── Rotas com rate limiters por tier ─────────────────────────────────────────
+app.use('/api/fiis/portfolio',      carteiraLimiter);
+app.use('/api/fiis/market',         rankingLimiter);
+app.use('/api/fiis/market-for-profile', rankingLimiter);
+app.use('/api/fiis/top10',          rankingLimiter);
+app.use('/api/fiis/top50',          rankingLimiter);
+app.use('/api/recommendations',     aiLimiter);
+
 app.use('/api/fiis',                require('./routes/fiis'));
 app.use('/api/profile',             require('./routes/profile'));
 app.use('/api/onboarding',          require('./routes/onboarding'));
