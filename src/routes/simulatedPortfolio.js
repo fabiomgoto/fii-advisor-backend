@@ -358,7 +358,7 @@ router.get('/backtest/:ticker', async (req, res) => {
     function getCdi(mes) { return CDI_MENSAL[mes] ?? 0.0100; }
 
     const hoje = new Date();
-    const periodos = [3, 6, 12, 18];
+    const periodos = [3, 6, 12, 18, 24];
     const cenarios = [];
 
     for (const meses of periodos) {
