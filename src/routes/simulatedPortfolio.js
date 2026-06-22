@@ -322,17 +322,30 @@ router.get('/backtest/:ticker', async (req, res) => {
 
     // IBOV histórico
     let ibovHist = [];
-    try {
-      const { data: ibov } = await axios.get(
-        'https://query1.finance.yahoo.com/v8/finance/chart/%5EBVSP?range=2y&interval=1mo',
-        { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } }
-      );
-      const r = ibov.chart.result[0];
-      ibovHist = r.timestamp.map((t, i) => ({
-        date: new Date(t * 1000).toISOString().substring(0, 10),
-        close: r.indicators.quote[0].close[i],
-      })).filter(p => p.close > 0);
-    } catch (_) {}
+    // Tenta Yahoo Finance, fallback Brapi
+    for (const source of [
+      { url: 'https://query1.finance.yahoo.com/v8/finance/chart/%5EBVSP?range=2y&interval=1mo', headers: { 'User-Agent': 'Mozilla/5.0' } },
+      { url: `https://brapi.dev/api/quote/%5EBVSP?range=2y&interval=1mo&token=${BRAPI_TOKEN}`, headers: {} },
+    ]) {
+      if (ibovHist.length) break;
+      try {
+        const { data: ibov } = await axios.get(source.url, { timeout: 10000, headers: source.headers });
+        const r = (ibov.chart?.result || ibov.results)?.[0];
+        if (r?.timestamp) {
+          ibovHist = r.timestamp.map((t, i) => ({
+            date: new Date(t * 1000).toISOString().substring(0, 10),
+            close: r.indicators.quote[0].close[i],
+          })).filter(p => p.close > 0);
+        } else if (r?.historicalDataPrice) {
+          ibovHist = r.historicalDataPrice.map(p => ({
+            date: new Date(p.date * 1000).toISOString().substring(0, 10),
+            close: p.close,
+          })).filter(p => p.close > 0);
+        }
+      } catch (e) {
+        console.warn('[backtest] IBOV source falhou:', e.message?.substring(0, 60));
+      }
+    }
 
     // Taxas CDI mensais aproximadas
     const CDI_MENSAL = {
