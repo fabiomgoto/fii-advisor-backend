@@ -23,7 +23,7 @@ async function gerarExplicacoesRecomendacao(perfil, score, wizardData, fiis) {
   if (!APIKEY()) return null;
 
   const fiisList = fiis.map(f =>
-    `${f.ticker}: DY=${f.dy_12m?.toFixed(1) ?? 'N/D'}% PVP=${f.pvp?.toFixed(2) ?? 'N/D'} Segmento=${f.segmento ?? 'N/D'}`
+    `${f.ticker}: DY=${Number(f.dy_12m)?.toFixed(1) ?? 'N/D'}% PVP=${Number(f.pvp)?.toFixed(2) ?? 'N/D'} Segmento=${f.segmento ?? 'N/D'}`
   ).join('\n');
 
   const contextoUsuario = [
@@ -127,7 +127,7 @@ async function gerarSintesePersonalizada(perfil, momento, fiis, macroCtx = {}) {
   }
 
   const fiisList = fiis.slice(0, 10).map(f =>
-    `${f.ticker}(DY=${f.dy_12m?.toFixed(1) ?? 'N/D'}% PVP=${f.pvp?.toFixed(2) ?? 'N/D'} Score=${f.score ?? 'N/D'})`
+    `${f.ticker}(DY=${Number(f.dy_12m)?.toFixed(1) ?? 'N/D'}% PVP=${Number(f.pvp)?.toFixed(2) ?? 'N/D'} Score=${f.score ?? 'N/D'})`
   ).join(', ');
 
   const prompt = `Você é analista sênior de FIIs brasileiros. Responda em português, texto corrido, sem markdown.
