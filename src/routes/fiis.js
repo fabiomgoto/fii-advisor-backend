@@ -1201,6 +1201,22 @@ async function enriquecerComRendimento(fiis) {
   });
 }
 
+// Explicação do resultado por perfil × momento (por que esses FIIs foram selecionados)
+const EXPLICACAO_PERFIL = {
+  conservador_saudavel:  { titulo: 'Conservador · Saudável', explicacao: 'Suas finanças estão sólidas e seu perfil prioriza segurança. Selecionamos FIIs de recebíveis e fundos de fundos — segmentos com menor volatilidade e fluxo de caixa previsível. Filtro: DY ≥ 6%, P/VP ≤ 1.05. Exposição máxima sugerida: 30% do patrimônio.' },
+  conservador_cauteloso: { titulo: 'Conservador · Cauteloso', explicacao: 'Seu momento financeiro pede cautela. Restringimos a seleção para recebíveis de alta qualidade, que oferecem proteção contra inflação e pagamento regular. Filtro: DY ≥ 7%, P/VP ≤ 1.00. Exposição máxima: 20%.' },
+  conservador_restrito:  { titulo: 'Conservador · Restrito', explicacao: 'Seu momento financeiro indica que novos aportes em FIIs devem ser pausados. Priorize reserva de emergência e quitação de dívidas. Quando estabilizar, os recebíveis são a porta de entrada ideal.' },
+  moderado_saudavel:     { titulo: 'Moderado · Saudável', explicacao: 'Finanças equilibradas e tolerância moderada a risco. Ampliamos para recebíveis, logístico e FOF — combinando renda passiva com potencial de valorização. Filtro: DY ≥ 7%, P/VP ≤ 1.10. Exposição máxima: 50%.' },
+  moderado_cauteloso:    { titulo: 'Moderado · Cauteloso', explicacao: 'Momento de atenção financeira. Focamos em recebíveis e logístico ordenados por DY — priorizando geração de caixa imediata. Filtro: DY ≥ 8%, P/VP ≤ 1.00. Exposição máxima: 35%.' },
+  moderado_restrito:     { titulo: 'Moderado · Restrito', explicacao: 'Momento financeiro delicado. Apenas recebíveis de baixíssimo risco com aportes mínimos. Exposição máxima: 10%.' },
+  arrojado_saudavel:     { titulo: 'Arrojado · Saudável', explicacao: 'Excelente momento financeiro e alta tolerância a risco. Incluímos logístico, shopping, corporativo, agro e recebíveis — maior diversificação de segmentos. Filtro: DY ≥ 6%, P/VP ≤ 1.20. Exposição máxima: 70%.' },
+  arrojado_cauteloso:    { titulo: 'Arrojado · Cauteloso', explicacao: 'Perfil arrojado mas momento de cautela. Reduzimos a recebíveis e logístico, segmentos mais resilientes. Filtro: DY ≥ 7%, P/VP ≤ 1.05. Exposição máxima: 40%.' },
+  arrojado_restrito:     { titulo: 'Arrojado · Restrito', explicacao: 'Momento restritivo. Apenas recebíveis com exposição mínima. Mantenha posições existentes e evite novos aportes relevantes. Exposição máxima: 15%.' },
+  sofisticado_saudavel:  { titulo: 'Sofisticado · Saudável', explicacao: 'Perfil experiente com finanças muito sólidas. Todos os segmentos estão liberados, sem filtro de DY ou P/VP — você tem autonomia para explorar qualquer oportunidade. Exposição máxima: 90%.' },
+  sofisticado_cauteloso: { titulo: 'Sofisticado · Cauteloso', explicacao: 'Alta expertise mas momento de cautela. Foco em logístico, shopping e recebíveis — segmentos geradores de caixa sólido. Filtro: DY ≥ 6%, P/VP ≤ 1.10. Exposição máxima: 50%.' },
+  sofisticado_restrito:  { titulo: 'Sofisticado · Restrito', explicacao: 'Momento restritivo. Gestão defensiva do portfólio — recebíveis e logístico apenas. Evite novos aportes. Exposição máxima: 25%.' },
+};
+
 // ── GET /api/fiis/market-for-profile ──────────────────────────────────────────
 // Retorna FIIs recomendados para o perfil dual do usuário, lidos de fiis_market.
 // Cache por célula (perfil × momento), TTL 1h para síntese IA.
@@ -1245,7 +1261,8 @@ router.get('/market-for-profile', authMiddleware, async (req, res) => {
     if (matrix.pausar) {
       const sintese = await gerarSintesePersonalizada(perfil, momento, [], {}).catch(() => null)
         || 'Seu momento financeiro atual recomenda pausar novos aportes em FIIs. Priorize a reserva de emergência e a quitação de dívidas.';
-      const payload = { top: todos.slice(0, 20), sintese, perfil, momento, personalizado: true, pausar: true, mensagem: matrix.mensagem };
+      const explicacao = EXPLICACAO_PERFIL[cacheKey] || null;
+      const payload = { top: todos.slice(0, 20), sintese, perfil, momento, personalizado: true, pausar: true, mensagem: matrix.mensagem, explicacao };
       profileSinteseCache[cacheKey] = { data: payload, ts: Date.now() };
       return res.json(payload);
     }
@@ -1279,7 +1296,8 @@ router.get('/market-for-profile', authMiddleware, async (req, res) => {
       profileSinteseCache[cacheKey] = { sintese, ts: Date.now() };
     }
 
-    res.json({ top, sintese, perfil, momento, personalizado: true, pausar: false, matrix });
+    const explicacao = EXPLICACAO_PERFIL[cacheKey] || null;
+    res.json({ top, sintese, perfil, momento, personalizado: true, pausar: false, matrix, explicacao });
   } catch (err) {
     console.error('[market-for-profile]', err.message);
     res.status(500).json({ error: err.message });
