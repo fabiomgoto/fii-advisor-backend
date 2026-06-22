@@ -322,28 +322,40 @@ router.get('/backtest/:ticker', async (req, res) => {
 
     // IBOV histórico
     let ibovHist = [];
-    // Tenta Yahoo Finance, fallback Brapi
-    for (const source of [
-      { url: 'https://query1.finance.yahoo.com/v8/finance/chart/%5EBVSP?range=2y&interval=1mo', headers: { 'User-Agent': 'Mozilla/5.0' } },
-      { url: `https://brapi.dev/api/quote/%5EBVSP?range=2y&interval=1mo&token=${BRAPI_TOKEN}`, headers: {} },
-    ]) {
-      if (ibovHist.length) break;
+    // Yahoo Finance para IBOV
+    try {
+      const { data: ibov } = await axios.get(
+        'https://query1.finance.yahoo.com/v8/finance/chart/%5EBVSP?range=2y&interval=1mo',
+        { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36' } }
+      );
+      const r = ibov?.chart?.result?.[0];
+      if (r?.timestamp) {
+        ibovHist = r.timestamp.map((t, i) => ({
+          date: new Date(t * 1000).toISOString().substring(0, 10),
+          close: r.indicators?.quote?.[0]?.close?.[i] ?? 0,
+        })).filter(p => p.close > 0);
+      }
+      console.log(`[backtest] Yahoo IBOV: ${ibovHist.length} pontos`);
+    } catch (e) {
+      console.warn('[backtest] Yahoo falhou:', e.response?.status, e.message?.substring(0, 60));
+    }
+    // Fallback: Brapi
+    if (!ibovHist.length) {
       try {
-        const { data: ibov } = await axios.get(source.url, { timeout: 10000, headers: source.headers });
-        const r = (ibov.chart?.result || ibov.results)?.[0];
-        if (r?.timestamp) {
-          ibovHist = r.timestamp.map((t, i) => ({
-            date: new Date(t * 1000).toISOString().substring(0, 10),
-            close: r.indicators.quote[0].close[i],
-          })).filter(p => p.close > 0);
-        } else if (r?.historicalDataPrice) {
+        const { data: ibov } = await axios.get(
+          `https://brapi.dev/api/quote/%5EBVSP?range=2y&interval=1mo&token=${BRAPI_TOKEN}`,
+          { timeout: 12000 }
+        );
+        const r = ibov?.results?.[0];
+        if (r?.historicalDataPrice) {
           ibovHist = r.historicalDataPrice.map(p => ({
             date: new Date(p.date * 1000).toISOString().substring(0, 10),
             close: p.close,
           })).filter(p => p.close > 0);
         }
+        console.log(`[backtest] Brapi IBOV fallback: ${ibovHist.length} pontos`);
       } catch (e) {
-        console.warn('[backtest] IBOV source falhou:', e.message?.substring(0, 60));
+        console.warn('[backtest] Brapi IBOV falhou:', e.response?.status, e.message?.substring(0, 60));
       }
     }
 
