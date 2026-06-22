@@ -1,8 +1,9 @@
 'use strict';
 
-const express = require('express');
-const router  = express.Router();
-const pool    = require('../db/connection');
+const express  = require('express');
+const router   = express.Router();
+const pool     = require('../db/connection');
+const aiCache  = require('../engine/fii-ai-cache');
 const {
   fetchFiisBrapi,
   normalizarFii,
@@ -89,7 +90,7 @@ router.get('/shadow-stats', async (req, res) => {
         (SELECT MAX(atualizado_em) FROM brapi_fii_cache)             AS ultima_atualizacao,
         (SELECT ROUND(AVG(campos_preenchidos), 1) FROM brapi_fii_cache) AS media_cobertura
     `);
-    res.json({ ok: true, data: result.rows[0] });
+    res.json({ ok: true, data: result.rows[0], aiCache: aiCache.getStats() });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

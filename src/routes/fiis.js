@@ -1020,8 +1020,7 @@ let top10Cache = null;
 const TOP10_TTL_MS = 60 * 60 * 1000; // 1h
 
 // Cache de síntese personalizada por célula de perfil × momento (12 combinações)
-const profileSinteseCache = {}; // key: "conservador_saudavel" → { sintese, top, ts }
-const PROFILE_SINTESE_TTL = 60 * 60 * 1000; // 1h
+const aiCache = require('../engine/fii-ai-cache');
 
 // Blacklist permanente — FIIs com problemas jurídicos ou em recuperação judicial
 // Inclui tickers extintos/incorporados que não existem mais na B3
@@ -1142,15 +1141,11 @@ async function rodarVarredura() {
 
   const top10 = top50.slice(0, 10);
 
-  // 4. Síntese IA sobre o top 10
-  let sintese = null;
-  try {
-    sintese = await gerarSintese(
-      top10.map(f => ({ ticker: f.ticker, dy_12m: f.dy_12m, pvp: f.pvp, score: f.score, vacancy: f.vacancy }))
-    );
-  } catch (e) {
-    console.warn('[top10] síntese IA falhou:', e.message);
-  }
+  // 4. Síntese IA sobre o top 10 (cache 1h)
+  const top10Tickers = top10.map(f => f.ticker);
+  const sintese = await aiCache.sintese(top10Tickers, () =>
+    gerarSintese(top10.map(f => ({ ticker: f.ticker, dy_12m: f.dy_12m, pvp: f.pvp, score: f.score, vacancy: f.vacancy })))
+  ).catch(e => { console.warn('[top10] síntese IA falhou:', e.message); return null; });
 
   // 5. Salva no banco (síntese + histórico de varredura)
   try {
@@ -1259,12 +1254,11 @@ router.get('/market-for-profile', authMiddleware, async (req, res) => {
     const matrix = getRecommendationConfig(perfil, momento);
 
     if (matrix.pausar) {
-      const sintese = await gerarSintesePersonalizada(perfil, momento, [], {}).catch(() => null)
-        || 'Seu momento financeiro atual recomenda pausar novos aportes em FIIs. Priorize a reserva de emergência e a quitação de dívidas.';
+      const sintese = await aiCache.sintesePersonalizada(perfil, momento, () =>
+        gerarSintesePersonalizada(perfil, momento, [], {}).catch(() => null)
+      ) || 'Seu momento financeiro atual recomenda pausar novos aportes em FIIs. Priorize a reserva de emergência e a quitação de dívidas.';
       const explicacao = EXPLICACAO_PERFIL[cacheKey] || null;
-      const payload = { top: todos.slice(0, 20), sintese, perfil, momento, personalizado: true, pausar: true, mensagem: matrix.mensagem, explicacao };
-      profileSinteseCache[cacheKey] = { data: payload, ts: Date.now() };
-      return res.json(payload);
+      return res.json({ top: todos.slice(0, 20), sintese, perfil, momento, personalizado: true, pausar: true, mensagem: matrix.mensagem, explicacao });
     }
 
     // Filtros da matriz perfil × momento
@@ -1287,14 +1281,10 @@ router.get('/market-for-profile', authMiddleware, async (req, res) => {
     const topRaw = eligible.length >= 5 ? eligible.slice(0, 20) : todos.slice(0, 20);
     const top = await enriquecerComRendimento(topRaw);
 
-    // Síntese IA — usa cache por célula de perfil
-    let sintese = null;
-    if (profileSinteseCache[cacheKey] && Date.now() - profileSinteseCache[cacheKey].ts < PROFILE_SINTESE_TTL) {
-      sintese = profileSinteseCache[cacheKey].sintese;
-    } else {
-      sintese = await gerarSintesePersonalizada(perfil, momento, top.slice(0, 10), {}).catch(() => null);
-      profileSinteseCache[cacheKey] = { sintese, ts: Date.now() };
-    }
+    // Síntese IA — cache centralizado (TTL 2h por perfil×momento)
+    const sintese = await aiCache.sintesePersonalizada(perfil, momento, () =>
+      gerarSintesePersonalizada(perfil, momento, top.slice(0, 10), {}).catch(() => null)
+    );
 
     const explicacao = EXPLICACAO_PERFIL[cacheKey] || null;
     res.json({ top, sintese, perfil, momento, personalizado: true, pausar: false, matrix, explicacao });

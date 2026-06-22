@@ -612,6 +612,9 @@ function iniciarScheduler() {
 (async () => {
   await runMigrations();
   iniciarScheduler();
+  const aiCache = require('./engine/fii-ai-cache');
+  aiCache.startEvictionLoop();
+
   app.listen(PORT, () => {
     console.log(`\n🚀 FII Advisor API rodando na porta ${PORT}`);
     console.log(`   Health: http://localhost:${PORT}/api/health\n`);
