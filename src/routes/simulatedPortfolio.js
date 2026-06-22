@@ -290,4 +290,126 @@ router.post('/refresh', async (req, res) => {
   }
 });
 
+// GET /simulated-portfolio/backtest/:ticker?qty=100
+// Simula: "se eu tivesse comprado X cotas há 3m, 6m, 12m, 18m — quanto teria hoje?"
+// Compara com CDI, IBOV e Poupança no mesmo período
+router.get('/backtest/:ticker', async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase();
+  const qty = Math.max(1, parseInt(req.query.qty) || 1);
+
+  try {
+    const axios = require('../services/axiosConfig');
+    const BRAPI_TOKEN = process.env.BRAPI_TOKEN;
+
+    // Buscar histórico de preços (2 anos) e dividendos do FII
+    const { data: brapiData } = await axios.get(
+      `https://brapi.dev/api/quote/${ticker}?range=2y&interval=1mo&dividends=true&token=${BRAPI_TOKEN}`,
+      { timeout: 12000 }
+    );
+    const result = brapiData?.results?.[0];
+    if (!result) return res.status(404).json({ error: 'Ticker não encontrado' });
+
+    const hist = (result.historicalDataPrice || []).map(p => ({
+      date:  new Date(p.date * 1000).toISOString().substring(0, 10),
+      close: p.close,
+    })).filter(p => p.close > 0);
+
+    const precoAtual = result.regularMarketPrice || hist[hist.length - 1]?.close || 0;
+    const divs = (result.dividendsData?.cashDividends || []).map(d => ({
+      date: d.paymentDate?.substring(0, 10) || d.lastDatePrior?.substring(0, 10),
+      rate: d.rate || 0,
+    }));
+
+    // IBOV histórico
+    let ibovHist = [];
+    try {
+      const { data: ibov } = await axios.get(
+        'https://query1.finance.yahoo.com/v8/finance/chart/%5EBVSP?range=2y&interval=1mo',
+        { timeout: 10000, headers: { 'User-Agent': 'Mozilla/5.0' } }
+      );
+      const r = ibov.chart.result[0];
+      ibovHist = r.timestamp.map((t, i) => ({
+        date: new Date(t * 1000).toISOString().substring(0, 10),
+        close: r.indicators.quote[0].close[i],
+      })).filter(p => p.close > 0);
+    } catch (_) {}
+
+    // Taxas CDI mensais aproximadas
+    const CDI_MENSAL = {
+      '2024-12': 0.0091, '2025-01': 0.0100, '2025-02': 0.0108, '2025-03': 0.0108,
+      '2025-04': 0.0108, '2025-05': 0.0116, '2025-06': 0.0116, '2025-07': 0.0108,
+      '2025-08': 0.0108, '2025-09': 0.0108, '2025-10': 0.0108, '2025-11': 0.0108,
+      '2025-12': 0.0108, '2026-01': 0.0116, '2026-02': 0.0116, '2026-03': 0.0116,
+      '2026-04': 0.0116, '2026-05': 0.0116, '2026-06': 0.0116,
+    };
+    function getCdi(mes) { return CDI_MENSAL[mes] ?? 0.0100; }
+
+    const hoje = new Date();
+    const periodos = [3, 6, 12, 18];
+    const cenarios = [];
+
+    for (const meses of periodos) {
+      const dataInicio = new Date(hoje);
+      dataInicio.setMonth(dataInicio.getMonth() - meses);
+      const isoInicio = dataInicio.toISOString().substring(0, 10);
+
+      // Preço do FII na data de início
+      const precoInicio = hist.reduce((best, p) => {
+        if (p.date <= isoInicio && (!best || p.date > best.date)) return p;
+        return best;
+      }, null)?.close || hist[0]?.close;
+
+      if (!precoInicio) continue;
+
+      const investido = precoInicio * qty;
+      const valorAtualFII = precoAtual * qty;
+
+      // Dividendos recebidos no período
+      const divsNoPeriodo = divs.filter(d => d.date >= isoInicio).reduce((s, d) => s + d.rate * qty, 0);
+      const totalFII = valorAtualFII + divsNoPeriodo;
+      const retornoFII = ((totalFII - investido) / investido) * 100;
+
+      // CDI composto
+      let cdiTotal = investido;
+      const mesInicio = isoInicio.substring(0, 7);
+      for (let m = new Date(dataInicio); m <= hoje; m.setMonth(m.getMonth() + 1)) {
+        const mes = m.toISOString().substring(0, 7);
+        if (mes >= mesInicio) cdiTotal *= (1 + getCdi(mes));
+      }
+      const retornoCDI = ((cdiTotal - investido) / investido) * 100;
+
+      // Poupança (~0.5% + 70% CDI)
+      let poupTotal = investido;
+      for (let m = new Date(dataInicio); m <= hoje; m.setMonth(m.getMonth() + 1)) {
+        const mes = m.toISOString().substring(0, 7);
+        if (mes >= mesInicio) poupTotal *= (1 + getCdi(mes) * 0.7 * 0.5 + 0.005);
+      }
+      const retornoPoup = ((poupTotal - investido) / investido) * 100;
+
+      // IBOV
+      const ibovInicio = ibovHist.reduce((best, p) => {
+        if (p.date <= isoInicio && (!best || p.date > best.date)) return p;
+        return best;
+      }, null)?.close;
+      const ibovAtual = ibovHist[ibovHist.length - 1]?.close;
+      const retornoIBOV = ibovInicio && ibovAtual ? ((ibovAtual / ibovInicio) - 1) * 100 : null;
+
+      cenarios.push({
+        meses,
+        investido:   Math.round(investido * 100) / 100,
+        precoInicio: Math.round(precoInicio * 100) / 100,
+        fii:       { valor: Math.round(totalFII * 100) / 100,    retorno: Math.round(retornoFII * 100) / 100,   dividendos: Math.round(divsNoPeriodo * 100) / 100 },
+        cdi:       { valor: Math.round(cdiTotal * 100) / 100,    retorno: Math.round(retornoCDI * 100) / 100 },
+        poupanca:  { valor: Math.round(poupTotal * 100) / 100,   retorno: Math.round(retornoPoup * 100) / 100 },
+        ibov:      retornoIBOV != null ? { retorno: Math.round(retornoIBOV * 100) / 100 } : null,
+      });
+    }
+
+    res.json({ ticker, qty, precoAtual, cenarios });
+  } catch (err) {
+    console.error('[backtest]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
