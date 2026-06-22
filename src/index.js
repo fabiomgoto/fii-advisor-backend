@@ -3,9 +3,13 @@ const express = require('express');
 const cors    = require('cors');
 const helmet  = require('helmet');
 const { globalLimiter, carteiraLimiter, rankingLimiter, aiLimiter } = require('./middleware/rateLimiter');
+const { initSentry, sentryErrorHandler } = require('./services/sentry');
 
 const app  = express();
 const PORT = process.env.PORT || 3002;
+
+// ── Sentry (ANTES de tudo) ───────────────────────────────────────────────────
+initSentry(app);
 
 // ── Middlewares ───────────────────────────────────────────────────────────────
 app.use(helmet({
@@ -41,6 +45,7 @@ app.use('/api/simulated-portfolio', require('./routes/simulatedPortfolio'));
 app.use('/api/admin',               require('./routes/admin'));
 app.use('/api/admin/brapi',         require('./routes/brapiAdmin'));
 app.use('/api/activity',            require('./routes/activity'));
+app.use(sentryErrorHandler());
 app.use(require('./middleware/errorHandler'));
 
 // ── Health check (rico) ───────────────────────────────────────────────────────
