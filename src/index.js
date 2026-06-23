@@ -1,15 +1,34 @@
 require('dotenv').config();
+// Sentry.init() DEVE rodar antes de qualquer require de framework
+const Sentry = require('@sentry/node');
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'development',
+    tracesSampleRate: process.env.NODE_ENV === 'production' ? 1.0 : 0.1,
+    ignoreErrors: ['rate_limit_exceeded', 'Not Found', 'ValidationError'],
+    beforeSend(event) {
+      if (event.request?.headers) {
+        delete event.request.headers['x-api-key'];
+        delete event.request.headers['authorization'];
+      }
+      return event;
+    },
+  });
+  console.log('[sentry] Monitoramento ativo —', process.env.NODE_ENV || 'development');
+}
+
 const express = require('express');
 const cors    = require('cors');
 const helmet  = require('helmet');
 const { globalLimiter, carteiraLimiter, rankingLimiter, aiLimiter } = require('./middleware/rateLimiter');
-const { initSentry, sentryErrorHandler } = require('./services/sentry');
+const { sentryErrorHandler, captureError } = require('./services/sentry');
 
 const app  = express();
 const PORT = process.env.PORT || 3002;
 
-// ── Sentry (ANTES de tudo) ───────────────────────────────────────────────────
-initSentry(app);
+// Sentry Express error handler
+if (process.env.SENTRY_DSN) Sentry.setupExpressErrorHandler(app);
 
 // ── Middlewares ───────────────────────────────────────────────────────────────
 app.use(helmet({
