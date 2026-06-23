@@ -27,9 +27,6 @@ const { sentryErrorHandler, captureError } = require('./services/sentry');
 const app  = express();
 const PORT = process.env.PORT || 3002;
 
-// Sentry Express error handler
-if (process.env.SENTRY_DSN) Sentry.setupExpressErrorHandler(app);
-
 // ── Middlewares ───────────────────────────────────────────────────────────────
 app.use(helmet({
   contentSecurityPolicy: {
@@ -64,6 +61,7 @@ app.use('/api/simulated-portfolio', require('./routes/simulatedPortfolio'));
 app.use('/api/admin',               require('./routes/admin'));
 app.use('/api/admin/brapi',         require('./routes/brapiAdmin'));
 app.use('/api/activity',            require('./routes/activity'));
+if (process.env.SENTRY_DSN) Sentry.setupExpressErrorHandler(app);
 app.use(sentryErrorHandler());
 app.use(require('./middleware/errorHandler'));
 
