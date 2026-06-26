@@ -524,6 +524,31 @@ async function runMigrations() {
     )
   `);
 
+  // ── Sprint 13: Explicação IA + Usage counter ────────────────────────────────
+  await run('fii_explicacao_cache', `
+    CREATE TABLE IF NOT EXISTS fii_explicacao_cache (
+      id           SERIAL PRIMARY KEY,
+      ticker       VARCHAR(10) NOT NULL,
+      perfil       VARCHAR(20) NOT NULL,
+      variacao_7d  NUMERIC(6,2),
+      variacao_30d NUMERIC(6,2),
+      explicacao   TEXT NOT NULL,
+      created_at   TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await run('idx_explicacao_ticker', `
+    CREATE INDEX IF NOT EXISTS idx_explicacao_ticker ON fii_explicacao_cache (ticker, perfil, created_at DESC)
+  `);
+  await run('usage_counter', `
+    CREATE TABLE IF NOT EXISTS usage_counter (
+      user_id    TEXT NOT NULL,
+      recurso    VARCHAR(40) NOT NULL,
+      ano_mes    VARCHAR(7) NOT NULL,
+      contador   INTEGER DEFAULT 0,
+      PRIMARY KEY (user_id, recurso, ano_mes)
+    )
+  `);
+
   console.log('[MIGRATIONS] concluídas');
 }
 

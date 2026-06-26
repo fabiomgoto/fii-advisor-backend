@@ -1567,6 +1567,232 @@ async function getStatusInvestData(ticker) {
   } catch (_) { return null; }
 }
 
+// ─── Sprint 13: "Por que caiu?" + Checagem Pré-compra ────────────────────────
+
+// GET /api/fiis/:ticker/explicacao — explicação IA do movimento de preço
+router.get('/:ticker/explicacao', authMiddleware, validateTicker, async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase();
+  const userId = req.userId;
+
+  try {
+    // Perfil do usuário
+    const { rows: profRows } = await pool.query(
+      'SELECT investor_profile_v2, financial_moment FROM user_profiles WHERE user_id = $1',
+      [userId]
+    );
+    const perfil = profRows[0]?.investor_profile_v2 || 'moderado';
+
+    // Feature gating: Free = 5/mês
+    const anoMes = new Date().toISOString().substring(0, 7);
+    const { rows: [usage] } = await pool.query(
+      `SELECT contador FROM usage_counter WHERE user_id = $1 AND recurso = 'explicacao_ia' AND ano_mes = $2`,
+      [userId, anoMes]
+    );
+    const isPro = profRows[0]?.plan === 'pro';
+    if (!isPro && (usage?.contador || 0) >= 5) {
+      return res.status(402).json({
+        error: 'Limite mensal atingido (5/mês). Faça upgrade para PRO para explicações ilimitadas.',
+        upgradeUrl: '/planos',
+      });
+    }
+
+    // Cache hit (6h)
+    const { rows: cached } = await pool.query(
+      `SELECT explicacao, variacao_7d, variacao_30d, created_at FROM fii_explicacao_cache
+       WHERE ticker = $1 AND perfil = $2 AND created_at > NOW() - INTERVAL '6 hours'
+       ORDER BY created_at DESC LIMIT 1`,
+      [ticker, perfil]
+    );
+    if (cached.length) {
+      return res.json({
+        ticker, perfil,
+        variacao_7d: parseFloat(cached[0].variacao_7d),
+        variacao_30d: parseFloat(cached[0].variacao_30d),
+        explicacao: cached[0].explicacao,
+        fonte_dados: 'cache',
+        gerado_em: cached[0].created_at,
+      });
+    }
+
+    // Buscar histórico de preço (30 dias)
+    let var7d = 0, var30d = 0, precoAtual = 0;
+    try {
+      const { data } = await axios.get(
+        `https://brapi.dev/api/quote/${ticker}?range=1mo&interval=1d&token=${BRAPI_TOKEN}`,
+        { timeout: 10000 }
+      );
+      const hist = data?.results?.[0]?.historicalDataPrice || [];
+      precoAtual = data?.results?.[0]?.regularMarketPrice || hist[hist.length - 1]?.close || 0;
+      if (hist.length >= 5) {
+        const preco7d = hist[Math.max(0, hist.length - 6)]?.close || precoAtual;
+        var7d = preco7d > 0 ? ((precoAtual - preco7d) / preco7d) * 100 : 0;
+      }
+      if (hist.length >= 1) {
+        const preco30d = hist[0]?.close || precoAtual;
+        var30d = preco30d > 0 ? ((precoAtual - preco30d) / preco30d) * 100 : 0;
+      }
+    } catch (_) {}
+
+    // Dados fundamentalistas
+    let dados = {};
+    try { dados = await getEnrichedData(ticker) || {}; } catch (_) {}
+
+    // Gerar explicação via Claude Haiku
+    const { gerarSintese: callHaiku } = require('../engine/fii-ai');
+    const aiCache = require('../engine/fii-ai-cache');
+
+    const prompt = `Você é um analista de FIIs que explica movimentos de mercado de forma didática, SEM recomendar compra ou venda. Use linguagem simples. Máximo 3 parágrafos.
+
+FII ${ticker}. Variação: ${var7d.toFixed(1)}% em 7 dias, ${var30d.toFixed(1)}% em 30 dias.
+Indicadores atuais: DY 12m ${Number(dados.dy_12m || 0).toFixed(1)}%, P/VP ${Number(dados.pvp || 0).toFixed(2)}, vacância ${Number(dados.vacancy || 0).toFixed(1)}%.
+Contexto macro: Selic ~14.75%, IFIX estável no mês.
+O usuário tem perfil ${perfil}. Explique o que provavelmente causou esse movimento e o que significa para esse perfil. Termine lembrando que não é recomendação de investimento.`;
+
+    const explicacao = await aiCache.explicacao(ticker, async () => {
+      const callClaude = require('../engine/fii-ai');
+      const axiosLib = require('axios');
+      const { data } = await axiosLib.post(
+        'https://api.anthropic.com/v1/messages',
+        { model: 'claude-haiku-4-5-20251001', max_tokens: 600, messages: [{ role: 'user', content: prompt }] },
+        { headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, timeout: 30000 }
+      );
+      return data.content[0].text;
+    });
+
+    // Salvar no cache
+    await pool.query(
+      `INSERT INTO fii_explicacao_cache (ticker, perfil, variacao_7d, variacao_30d, explicacao) VALUES ($1,$2,$3,$4,$5)`,
+      [ticker, perfil, var7d.toFixed(2), var30d.toFixed(2), explicacao]
+    );
+
+    // Incrementar usage
+    await pool.query(
+      `INSERT INTO usage_counter (user_id, recurso, ano_mes, contador) VALUES ($1, 'explicacao_ia', $2, 1)
+       ON CONFLICT (user_id, recurso, ano_mes) DO UPDATE SET contador = usage_counter.contador + 1`,
+      [userId, anoMes]
+    );
+
+    res.json({
+      ticker, perfil,
+      variacao_7d: Math.round(var7d * 100) / 100,
+      variacao_30d: Math.round(var30d * 100) / 100,
+      explicacao,
+      fonte_dados: 'fresh',
+      gerado_em: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[explicacao]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/fiis/:ticker/checagem — checagem pré-compra (determinística, sem IA)
+router.get('/:ticker/checagem', authMiddleware, validateTicker, async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase();
+  const userId = req.userId;
+
+  try {
+    // Dados do FII
+    let dados = null;
+    try { dados = await getEnrichedData(ticker); } catch (_) {}
+
+    // Também busca de fiis_market
+    const { rows: [market] } = await pool.query(
+      'SELECT * FROM fiis_market WHERE ticker = $1', [ticker]
+    );
+
+    if (!dados && !market) {
+      return res.status(404).json({ error: 'FII não encontrado' });
+    }
+
+    const fii = {
+      ticker,
+      name:       market?.name || dados?.name || ticker,
+      price:      Number(market?.price || dados?.price || 0),
+      dy_12m:     Number(market?.dy_12m || dados?.dy_12m || 0),
+      pvp:        Number(market?.pvp || dados?.pvp || 0),
+      vacancy:    Number(market?.vacancy || dados?.vacancy || 0),
+      liquidity:  Number(market?.liquidity || dados?.liquidity || 0),
+      properties: Number(market?.properties || dados?.properties || 0),
+      wault:      Number(market?.wault || dados?.wault || 0),
+      leverage:   Number(market?.leverage || dados?.leverage || 0),
+      consistency: Number(market?.consistency || dados?.consistency || 0),
+      div_growth: Number(market?.div_growth || dados?.div_growth || 0),
+    };
+
+    // Score
+    const { score, segmento, score_breakdown } = calcularScore(fii);
+    const action = getAction(score);
+
+    // Perfil do usuário
+    const { rows: profRows } = await pool.query(
+      'SELECT investor_profile_v2, financial_moment FROM user_profiles WHERE user_id = $1',
+      [userId]
+    );
+    const perfil = profRows[0]?.investor_profile_v2 || 'moderado';
+    const momento = profRows[0]?.financial_moment || 'cauteloso';
+
+    // Veredito baseado na matriz perfil×momento
+    let veredito, veredito_texto;
+    if (score >= 80 && (momento === 'saudavel' || momento === 'cauteloso')) {
+      veredito = 'combina';
+      veredito_texto = `Combina com seu perfil ${perfil.charAt(0).toUpperCase() + perfil.slice(1)}`;
+    } else if (score >= 60 || momento === 'cauteloso') {
+      veredito = 'cautela';
+      veredito_texto = `Requer cautela para seu perfil ${perfil.charAt(0).toUpperCase() + perfil.slice(1)}`;
+    } else {
+      veredito = 'evitar';
+      veredito_texto = `Não indicado para seu momento financeiro atual`;
+    }
+    if (momento === 'restrito') {
+      veredito = 'evitar';
+      veredito_texto = 'Seu momento financeiro recomenda pausar novos aportes';
+    }
+
+    // Extrair pontos fortes e atenção do breakdown
+    const criterios = score_breakdown?.criterios || [];
+    const semDado = score_breakdown?.criterios_sem_dado || [];
+
+    const pontos_fortes = criterios
+      .filter(c => c.pct >= 70)
+      .sort((a, b) => b.pct - a.pct)
+      .slice(0, 3)
+      .map(c => {
+        const labels = {
+          dy_12m: `DY 12m de ${Number(c.valor).toFixed(1)}%`, pvp: `P/VP de ${Number(c.valor).toFixed(2)}`,
+          vacancy: `Vacância de ${Number(c.valor).toFixed(1)}%`, liquidity: `Liquidez diária R$ ${(Number(c.valor)/1e6).toFixed(1)}M`,
+          consistency: `Consistência de ${Number(c.valor).toFixed(0)}/10`, wault: `WAULT de ${Number(c.valor).toFixed(1)} anos`,
+          leverage: `Alavancagem de ${Number(c.valor).toFixed(0)}%`, properties: `${Number(c.valor).toFixed(0)} imóveis`,
+          div_growth: `Crescimento de DY ${(Number(c.valor)*100).toFixed(1)}%`,
+        };
+        return labels[c.campo] || `${c.campo}: ${c.valor}`;
+      });
+
+    const pontos_atencao = [
+      ...criterios.filter(c => c.pct < 40).sort((a, b) => a.pct - b.pct).slice(0, 2).map(c => {
+        const labels = {
+          dy_12m: `DY de ${Number(c.valor).toFixed(1)}% (abaixo da média)`, pvp: `P/VP de ${Number(c.valor).toFixed(2)} (acima do patrimonial)`,
+          vacancy: `Vacância de ${Number(c.valor).toFixed(1)}% (elevada)`, liquidity: `Liquidez baixa`,
+          consistency: `Consistência de ${Number(c.valor).toFixed(0)}/10`, leverage: `Alavancagem de ${Number(c.valor).toFixed(0)}% (elevada)`,
+        };
+        return labels[c.campo] || `${c.campo} fraco`;
+      }),
+      ...semDado.slice(0, 2).map(c => `${c.campo} não disponível para este fundo`),
+    ].slice(0, 3);
+
+    res.json({
+      ticker, nome: fii.name, score, segmento, action,
+      perfil_usuario: perfil, momento_financeiro: momento,
+      veredito, veredito_texto,
+      pontos_fortes, pontos_atencao,
+      cobertura_pct: score_breakdown?.cobertura_pct,
+    });
+  } catch (err) {
+    console.error('[checagem]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // GET /api/fiis/:ticker/detail?range=1mo|3mo|1y
 router.get('/:ticker/detail', validateTicker, async (req, res) => {
   const ticker = req.params.ticker.toUpperCase();
