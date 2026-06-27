@@ -19,4 +19,4 @@ function captureError(err, context = {}) {
   });
 }
 
-module.exports = { initSentry, sentryErrorHandler, captureError };
+module.exports = { sentryErrorHandler, captureError };

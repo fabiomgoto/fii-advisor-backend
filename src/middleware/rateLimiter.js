@@ -33,6 +33,7 @@ function createLimiter({ freeMax, proMax, windowMs }) {
     standardHeaders: true,
     legacyHeaders:   false,
     handler:         onLimitReached,
+    validate:        false,
     skip: (req) => {
       const cronSecret = process.env.CRON_SECRET;
       if (cronSecret && req.headers['x-cron-secret'] === cronSecret) return true;
