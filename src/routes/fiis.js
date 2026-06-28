@@ -1567,6 +1567,68 @@ async function getStatusInvestData(ticker) {
   } catch (_) { return null; }
 }
 
+// ─── Análise Profunda 5 Camadas — veredicto IA ──────────────────────────────
+
+router.post('/:ticker/deep-analysis', authMiddleware, validateTicker, async (req, res) => {
+  const ticker = req.params.ticker.toUpperCase();
+  try {
+    const layers = req.body;
+    if (!layers?.c1 || !layers?.c2) return res.status(400).json({ error: 'Dados das camadas ausentes' });
+
+    const { c1, c2, c3, c4, c5, isPapel } = layers;
+
+    const prompt = `Você é um assessor de investimentos especialista em FIIs brasileiros com 20 anos de experiência.
+Analise o FII ${ticker} e produza um diagnóstico profissional.
+
+TIPO: ${isPapel ? 'PAPEL (CRI/LCI)' : 'TIJOLO (imóveis físicos)'}
+
+CAMADA 1 — PORTFÓLIO:
+${isPapel
+  ? `Composição: ${c1.composicao || '—'} | Prazo médio: ${c1.prazoMedio || '—'} | Taxa: ${c1.taxaMedia || '—'} | Inadimplência: ${c1.inadimplencia || '—'}`
+  : `Vacância: ${c1.vacancia || '—'} | WAULT: ${c1.wault || '—'} | Imóveis: ${c1.nImoveis || '—'}`}
+
+CAMADA 2 — DISTRIBUIÇÃO:
+Último provento: ${c2.ultimoProvento || '—'} | DY 12m: ${c2.dy12m || '—'}
+
+CAMADA 3 — VALUATION:
+Cotação: ${c3?.cotacao || '—'} | P/VP: ${c3?.pvp || '—'} | VPA: ${c3?.vpa || '—'}
+${c3?.range52 ? `Posição no range 52s: ${c3.range52.pct}%` : ''}
+
+CAMADA 4 — MACRO:
+Selic: ${c4?.selic || '—'} | Indexador: ${c4?.indexador || '—'} | Spread NTN-B: ${c4?.spreadNTNB || '—'}
+
+CAMADA 5 — PREÇO:
+Variação 12m: ${c5?.var12m || '—'} | Retorno total: ${c5?.retornoTotal || '—'} | Liquidez: ${c5?.liquidez || '—'}
+
+Responda APENAS em JSON válido sem markdown:
+{
+  "veredicto": "comprar" | "manter" | "reduzir" | "trocar",
+  "narrativa": "3 parágrafos em HTML (use <strong> para destaques, <br><br> entre parágrafos). Tom profissional e direto. Máx 400 palavras.",
+  "riscos": [
+    { "nivel": "alto" | "medio" | "baixo", "descricao": "descrição concisa" }
+  ]
+}
+Incluir 3 a 4 riscos ordenados por nível (alto primeiro).`;
+
+    const axiosLib = require('axios');
+    const { data } = await axiosLib.post(
+      'https://api.anthropic.com/v1/messages',
+      { model: 'claude-haiku-4-5-20251001', max_tokens: 1000, messages: [{ role: 'user', content: prompt }] },
+      { headers: { 'x-api-key': process.env.ANTHROPIC_API_KEY, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' }, timeout: 30000 }
+    );
+    const raw = data?.content?.[0]?.text || '{}';
+    try {
+      const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+      res.json(parsed);
+    } catch {
+      res.json({ veredicto: 'manter', narrativa: raw, riscos: [] });
+    }
+  } catch (err) {
+    console.error('[deep-analysis]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ─── Sprint 13: "Por que caiu?" + Checagem Pré-compra ────────────────────────
 
 // GET /api/fiis/:ticker/explicacao — explicação IA do movimento de preço
