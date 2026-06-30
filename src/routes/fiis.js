@@ -986,20 +986,27 @@ router.get('/benchmark', authMiddleware, async (req, res) => {
     );
     const provMap = Object.fromEntries(provMensal.map(r => [r.mes, parseFloat(r.total)]));
 
-    // Valor da carteira por mês (investido + proventos acumulados)
+    // Valor da carteira por mês
     let investidoAcum = 0, provAcum = 0;
+    // carteiraReinv: proventos reinvestidos rendem CDI composto
+    let reinvTotal = 0;
     const series = [];
 
     for (const mes of meses) {
       const aporte = aportesPorMes[mes] || 0;
+      const provMes = provMap[mes] || 0;
       investidoAcum += aporte;
-      provAcum += provMap[mes] || 0;
+      provAcum += provMes;
 
-      // CDI: cada aporte rende CDI composto desde o mês do aporte
+      // CDI: cada aporte rende CDI composto
       cdiTotal = (cdiTotal + aporte) * (1 + getCdiMensal(mes));
 
       // Poupança
       poupTotal = (poupTotal + aporte) * (1 + getPoupMensal(mes));
+
+      // Carteira + DY reinvestido: aportes + proventos acumulados rendendo CDI
+      // Simula: cada provento recebido é reaplicado e rende juros compostos
+      reinvTotal = (reinvTotal + aporte + provMes) * (1 + getCdiMensal(mes));
 
       // IBOV: compra unidades do índice no mês do aporte
       const ibovPrice = ibovMap[mes];
@@ -1008,11 +1015,12 @@ router.get('/benchmark', authMiddleware, async (req, res) => {
 
       series.push({
         mes,
-        investido: Math.round(investidoAcum),
-        carteira:  Math.round(investidoAcum + provAcum),
-        cdi:       Math.round(cdiTotal),
-        poupanca:  Math.round(poupTotal),
-        ibov:      ibovValor ? Math.round(ibovValor) : null,
+        investido:      Math.round(investidoAcum),
+        carteira:       Math.round(investidoAcum + provAcum),
+        carteiraReinv:  Math.round(reinvTotal),
+        cdi:            Math.round(cdiTotal),
+        poupanca:       Math.round(poupTotal),
+        ibov:           ibovValor ? Math.round(ibovValor) : null,
       });
     }
 
