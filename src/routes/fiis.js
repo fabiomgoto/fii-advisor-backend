@@ -1661,16 +1661,20 @@ router.get('/:ticker/explicacao', authMiddleware, validateTicker, async (req, re
     );
     const perfil = profRows[0]?.investor_profile_v2 || 'moderado';
 
-    // Feature gating: Free = 5/mês
+    // Feature gating por plano (limite mensal de explicações IA)
+    const { getLimit } = require('../config/plans');
+    const { getUserPlan } = require('../services/subscriptionService');
+    const { plan } = await getUserPlan(userId);
+    const limite = getLimit(plan, 'explicacao_ia'); // null = ilimitado
+
     const anoMes = new Date().toISOString().substring(0, 7);
     const { rows: [usage] } = await pool.query(
       `SELECT contador FROM usage_counter WHERE user_id = $1 AND recurso = 'explicacao_ia' AND ano_mes = $2`,
       [userId, anoMes]
     );
-    const isPro = profRows[0]?.plan === 'pro';
-    if (!isPro && (usage?.contador || 0) >= 5) {
+    if (limite !== null && (usage?.contador || 0) >= limite) {
       return res.status(402).json({
-        error: 'Limite mensal atingido (5/mês). Faça upgrade para PRO para explicações ilimitadas.',
+        error: `Limite mensal atingido (${limite}/mês). Faça upgrade para explicações ilimitadas.`,
         upgradeUrl: '/planos',
       });
     }
