@@ -23,6 +23,8 @@ const cors    = require('cors');
 const helmet  = require('helmet');
 const { globalLimiter, carteiraLimiter, rankingLimiter, aiLimiter } = require('./middleware/rateLimiter');
 const { sentryErrorHandler, captureError } = require('./services/sentry');
+const auth = require('./middleware/auth');
+const { attachPlan } = require('./middleware/requirePlan');
 
 const app  = express();
 const PORT = process.env.PORT || 3002;
@@ -46,12 +48,15 @@ app.use(express.json());
 app.use('/api', globalLimiter);
 
 // ── Rotas com rate limiters por tier ─────────────────────────────────────────
-app.use('/api/fiis/portfolio',      carteiraLimiter);
+// Rotas protegidas: auth + attachPlan ANTES do limiter → limite reflete o plano
+// (auth é idempotente; o router interno não revalida o JWT).
+app.use('/api/fiis/portfolio',      auth, attachPlan, carteiraLimiter);
+app.use('/api/recommendations',     auth, attachPlan, aiLimiter);
+// Rotas públicas de mercado: limite por IP (plano free)
 app.use('/api/fiis/market',         rankingLimiter);
 app.use('/api/fiis/market-for-profile', rankingLimiter);
 app.use('/api/fiis/top10',          rankingLimiter);
 app.use('/api/fiis/top50',          rankingLimiter);
-app.use('/api/recommendations',     aiLimiter);
 
 app.use('/api/fiis',                require('./routes/fiis'));
 app.use('/api/profile',             require('./routes/profile'));
