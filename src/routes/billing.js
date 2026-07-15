@@ -66,16 +66,45 @@ router.get('/subscription', auth, async (req, res) => {
   }
 });
 
+const METODOS_VALIDOS = ['PIX', 'BOLETO', 'CREDIT_CARD'];
+
+function getRemoteIp(req) {
+  return (
+    (req.headers['x-forwarded-for'] || '').split(',')[0].trim() ||
+    req.socket?.remoteAddress ||
+    req.ip ||
+    ''
+  );
+}
+
 // ── POST /checkout ────────────────────────────────────────────────────────────
-// body: { plan: 'pro'|'premium', cpfCnpj, name?, phone?, billingType? }
+// body: {
+//   plan, cpfCnpj, name?, phone?, email?,
+//   billingType: 'PIX'|'BOLETO'|'CREDIT_CARD',
+//   card?:   { holderName, number, expiryMonth, expiryYear, ccv },  // só p/ cartão
+//   holder?: { postalCode, addressNumber }                          // só p/ cartão
+// }
 router.post('/checkout', auth, async (req, res) => {
-  const { plan: planId, cpfCnpj, name, phone, billingType } = req.body || {};
+  const { plan: planId, cpfCnpj, name, phone, card, holder } = req.body || {};
+  const billingType = (req.body?.billingType || 'PIX').toUpperCase();
 
   if (!PLAN_ORDER.includes(planId) || planId === 'free') {
     return res.status(400).json({ error: 'Plano inválido para checkout.' });
   }
-  if (!cpfCnpj || String(cpfCnpj).replace(/\D/g, '').length < 11) {
+  if (!METODOS_VALIDOS.includes(billingType)) {
+    return res.status(400).json({ error: 'Forma de pagamento inválida.' });
+  }
+  const cpfDigits = String(cpfCnpj || '').replace(/\D/g, '');
+  if (cpfDigits.length < 11) {
     return res.status(400).json({ error: 'CPF/CNPJ é obrigatório para o pagamento.' });
+  }
+  if (billingType === 'CREDIT_CARD') {
+    if (!card?.number || !card?.expiryMonth || !card?.expiryYear || !card?.ccv || !card?.holderName) {
+      return res.status(400).json({ error: 'Dados do cartão incompletos.' });
+    }
+    if (!holder?.postalCode || !holder?.addressNumber) {
+      return res.status(400).json({ error: 'CEP e número são obrigatórios para pagamento com cartão.' });
+    }
   }
   if (!asaas.isConfigured()) {
     return res.status(503).json({ error: 'Pagamento indisponível: provedor não configurado.' });
@@ -98,22 +127,51 @@ router.post('/checkout', auth, async (req, res) => {
       const customer = await asaas.createCustomer({
         name:              name || email.split('@')[0],
         email,
-        cpfCnpj,
+        cpfCnpj:           cpfDigits,
         mobilePhone:       phone,
         externalReference: req.userId,
       });
       customerId = customer.id;
     }
 
-    const subscription = await asaas.createSubscription({
+    const remoteIp = getRemoteIp(req);
+    const subData = {
       customer:          customerId,
       value:             plan.preco,
       cycle:             plan.cycle || 'MONTHLY',
       nextDueDate:       proximaDataVencimento(),
       description:       `FII Advisor ${plan.nome}`,
-      billingType:       billingType || 'UNDEFINED',
+      billingType,
       externalReference: `${req.userId}:${planId}`,
-    });
+    };
+
+    // Cartão: tokeniza (não guardamos dados de cartão) e assina com o token
+    if (billingType === 'CREDIT_CARD') {
+      const holderInfo = {
+        name:          card.holderName,
+        email,
+        cpfCnpj:       cpfDigits,
+        postalCode:    String(holder.postalCode).replace(/\D/g, ''),
+        addressNumber: String(holder.addressNumber),
+        phone:         String(phone || '').replace(/\D/g, '') || undefined,
+      };
+      const tokenized = await asaas.tokenizeCreditCard({
+        customer:             customerId,
+        creditCard: {
+          holderName:  card.holderName,
+          number:      String(card.number).replace(/\s/g, ''),
+          expiryMonth: String(card.expiryMonth),
+          expiryYear:  String(card.expiryYear),
+          ccv:         String(card.ccv),
+        },
+        creditCardHolderInfo: holderInfo,
+        remoteIp,
+      });
+      subData.creditCardToken = tokenized.creditCardToken;
+      subData.remoteIp        = remoteIp;
+    }
+
+    const subscription = await asaas.createSubscription(subData);
 
     await subs.upsertSubscription({
       userId:              req.userId,
@@ -125,23 +183,45 @@ router.post('/checkout', auth, async (req, res) => {
       cycle:               plan.cycle || 'MONTHLY',
     });
 
-    // URL de pagamento da primeira cobrança
-    let paymentUrl = null;
+    // Primeira cobrança da assinatura
+    let firstPayment = null;
     try {
       const payments = await asaas.listSubscriptionPayments(subscription.id);
-      paymentUrl = payments[0]?.invoiceUrl || null;
+      firstPayment = payments[0] || null;
     } catch (_) {}
+
+    // Monta o payload de pagamento conforme o método
+    const payment = {
+      method:     billingType,
+      status:     firstPayment?.status || subscription.status || 'PENDING',
+      value:      plan.preco,
+      invoiceUrl: firstPayment?.invoiceUrl || null,
+    };
+
+    if (billingType === 'PIX' && firstPayment?.id) {
+      try {
+        const pix = await asaas.getPixQrCode(firstPayment.id);
+        payment.pixImage    = pix.encodedImage ? `data:image/png;base64,${pix.encodedImage}` : null;
+        payment.pixPayload  = pix.payload || null;   // copia-e-cola
+        payment.expiresAt   = pix.expirationDate || null;
+      } catch (_) {}
+    }
+    if (billingType === 'BOLETO' && firstPayment) {
+      payment.boletoUrl          = firstPayment.bankSlipUrl || firstPayment.invoiceUrl || null;
+      payment.identificationField = firstPayment.identificationField || null;
+    }
 
     res.json({
       ok: true,
       subscriptionId: subscription.id,
       plan: planId,
-      paymentUrl,
+      paymentUrl: firstPayment?.invoiceUrl || null, // compat
+      payment,
     });
   } catch (err) {
     await logError({
       type: 'unknown', source: 'billing/checkout', message: err.message,
-      error: err, userId: req.userId, metadata: { plan: planId },
+      error: err, userId: req.userId, metadata: { plan: planId, billingType },
     });
     res.status(err.statusCode || 500).json({ error: err.message });
   }

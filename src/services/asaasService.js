@@ -81,13 +81,14 @@ async function getCustomer(customerId) {
  * Cria uma assinatura recorrente.
  * @param {{
  *   customer:string, value:number, cycle:string, nextDueDate:string,
- *   description?:string, billingType?:string, externalReference?:string
+ *   description?:string, billingType?:string, externalReference?:string,
+ *   creditCardToken?:string, creditCard?:object, creditCardHolderInfo?:object, remoteIp?:string
  * }} dados
  * @returns {Promise<object>} subscription
  */
 async function createSubscription(dados) {
   try {
-    const { data } = await client().post('/subscriptions', {
+    const body = {
       customer:          dados.customer,
       billingType:       dados.billingType || 'UNDEFINED', // deixa o cliente escolher PIX/boleto/cartão
       value:             dados.value,
@@ -95,10 +96,52 @@ async function createSubscription(dados) {
       nextDueDate:       dados.nextDueDate,
       description:       dados.description,
       externalReference: dados.externalReference,
-    });
+    };
+    // Cartão: usa token (preferível) ou dados brutos + IP do pagador
+    if (dados.creditCardToken) {
+      body.creditCardToken = dados.creditCardToken;
+    } else if (dados.creditCard) {
+      body.creditCard           = dados.creditCard;
+      body.creditCardHolderInfo = dados.creditCardHolderInfo;
+    }
+    if (dados.remoteIp) body.remoteIp = dados.remoteIp;
+
+    const { data } = await client().post('/subscriptions', body);
     return data;
   } catch (err) {
     throw toError(err, 'createSubscription');
+  }
+}
+
+/**
+ * Tokeniza um cartão de crédito (não armazenamos dados de cartão).
+ * @param {{ customer:string, creditCard:object, creditCardHolderInfo:object, remoteIp:string }} dados
+ * @returns {Promise<{creditCardToken:string, creditCardNumber:string, creditCardBrand:string}>}
+ */
+async function tokenizeCreditCard(dados) {
+  try {
+    const { data } = await client().post('/creditCard/tokenizeCreditCard', {
+      customer:             dados.customer,
+      creditCard:           dados.creditCard,
+      creditCardHolderInfo: dados.creditCardHolderInfo,
+      remoteIp:             dados.remoteIp,
+    });
+    return data;
+  } catch (err) {
+    throw toError(err, 'tokenizeCreditCard');
+  }
+}
+
+/**
+ * Busca o QR Code PIX de uma cobrança.
+ * @returns {Promise<{encodedImage:string, payload:string, expirationDate:string}>}
+ */
+async function getPixQrCode(paymentId) {
+  try {
+    const { data } = await client().get(`/payments/${paymentId}/pixQrCode`);
+    return data;
+  } catch (err) {
+    throw toError(err, 'getPixQrCode');
   }
 }
 
@@ -157,4 +200,6 @@ module.exports = {
   listSubscriptionPayments,
   cancelSubscription,
   getPayment,
+  tokenizeCreditCard,
+  getPixQrCode,
 };
