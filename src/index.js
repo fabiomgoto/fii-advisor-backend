@@ -524,6 +524,61 @@ async function runMigrations() {
     )
   `);
 
+  // ── macro_snapshot: índices mensais IBOV/IFIX (usado pelo scraping-job e benchmark) ──
+  await run('macro_snapshot_table', `
+    CREATE TABLE IF NOT EXISTS macro_snapshot (
+      symbol     VARCHAR(20)  NOT NULL,
+      range      VARCHAR(10)  NOT NULL DEFAULT '5y',
+      data       JSONB        NOT NULL DEFAULT '{}',
+      updated_at TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (symbol, range)
+    )
+  `);
+
+  // ── fii_proventos: garante unique constraint para ON CONFLICT funcionar ────────
+  await run('fii_proventos_table', `
+    CREATE TABLE IF NOT EXISTS fii_proventos (
+      id             SERIAL PRIMARY KEY,
+      user_id        TEXT         NOT NULL,
+      ticker         VARCHAR(10)  NOT NULL,
+      competencia    DATE         NOT NULL,
+      data_com       DATE,
+      valor_por_cota NUMERIC(10,6),
+      cotas_na_data  NUMERIC(12,4),
+      total_recebido NUMERIC(12,2),
+      fonte          VARCHAR(20)  DEFAULT 'manual',
+      created_at     TIMESTAMPTZ  DEFAULT NOW(),
+      updated_at     TIMESTAMPTZ  DEFAULT NOW()
+    )
+  `);
+  await run('fii_proventos_unique', `
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'fii_proventos_user_ticker_competencia_unique'
+      ) THEN
+        ALTER TABLE fii_proventos
+          ADD CONSTRAINT fii_proventos_user_ticker_competencia_unique
+          UNIQUE (user_id, ticker, competencia);
+      END IF;
+    END $$;
+  `);
+  await run('fii_proventos_idx', `
+    CREATE INDEX IF NOT EXISTS idx_fii_proventos_user_ticker
+      ON fii_proventos (user_id, ticker, competencia DESC)
+  `);
+
+  await run('user_profiles_last_dividends_sync', `
+    ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS last_dividends_sync TIMESTAMPTZ
+  `);
+
+  // ── contributions: garante coluna total (calculada) ──────────────────────────
+  await run('contributions_total_col', `
+    ALTER TABLE contributions
+      ADD COLUMN IF NOT EXISTS total NUMERIC(14,2)
+        GENERATED ALWAYS AS (quantity::numeric * price_paid::numeric) STORED
+  `);
+
   // ── Sprint 13: Explicação IA + Usage counter ────────────────────────────────
   await run('fii_explicacao_cache', `
     CREATE TABLE IF NOT EXISTS fii_explicacao_cache (
@@ -657,6 +712,48 @@ function iniciarScheduler() {
       console.error('[CRON] Erro no health check:', err.message);
     }
   }, { timezone: 'UTC' });
+
+  // Sync dividendos Brapi para todos os usuários — diário às 19h (antes do sync de proventos)
+  cron.schedule('0 19 * * 1-5', async () => {
+    console.log('[CRON] Sync dividendos Brapi (todos os usuários)...');
+    try {
+      const { brapiDividsToDB } = require('./utils/dividendUtils');
+      const { rows: usuarios } = await pool.query(
+        `SELECT DISTINCT pf.user_id, array_agg(pf.ticker) AS tickers
+         FROM portfolio_fiis pf GROUP BY pf.user_id`
+      );
+      for (const { user_id, tickers } of usuarios) {
+        for (const ticker of tickers) {
+          try {
+            const { data } = await require('./services/axiosConfig').get(
+              `https://brapi.dev/api/quote/${ticker}?token=${process.env.BRAPI_TOKEN}&dividends=true`,
+              { timeout: 12000 }
+            );
+            const lista = brapiDividsToDB(data?.results?.[0]?.dividendsData?.cashDividends || []);
+            for (const { exDate, paymentDate, rate } of lista) {
+              await pool.query(
+                `INSERT INTO dividends (user_id, ticker, ex_date, payment_date, value_per_share)
+                 VALUES ($1,$2,$3,$4,$5)
+                 ON CONFLICT (user_id, ticker, ex_date)
+                 DO UPDATE SET value_per_share = EXCLUDED.value_per_share, payment_date = EXCLUDED.payment_date`,
+                [user_id, ticker, exDate, paymentDate || null, rate]
+              );
+            }
+          } catch (_) {}
+        }
+        await pool.query(
+          `UPDATE user_profiles SET last_dividends_sync = NOW() WHERE user_id = $1`, [user_id]
+        );
+      }
+      console.log(`[CRON] Sync dividendos concluído: ${usuarios.length} usuários`);
+    } catch (err) {
+      console.error('[CRON] Erro sync dividendos Brapi:', err.message);
+    }
+  }, { timezone: 'America/Sao_Paulo' });
+
+  // Scraping job: raspa StatusInvest + macro (IBOV/IFIX) a cada 6h
+  const { startScrapingJob } = require('./engine/scraping-job');
+  startScrapingJob();
 
   console.log('[CRON] Scheduler FII iniciado');
 }

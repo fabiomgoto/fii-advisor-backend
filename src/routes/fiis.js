@@ -118,6 +118,43 @@ router.get('/portfolio', async (req, res) => {
     const tickers = fiis.map(f => f.ticker);
     if (!tickers.length) return res.json([]);
 
+    // Auto-sync dividendos Brapi em background (não bloqueia resposta)
+    // Roda só se o último sync foi há mais de 6h (coluna last_dividends_sync em user_profiles)
+    setImmediate(async () => {
+      try {
+        const { rows: prof } = await pool.query(
+          `SELECT last_dividends_sync FROM user_profiles WHERE user_id = $1`, [userId]
+        );
+        const lastSync = prof[0]?.last_dividends_sync;
+        const stale = !lastSync || (Date.now() - new Date(lastSync).getTime()) > 6 * 60 * 60 * 1000;
+        if (!stale) return;
+
+        const { brapiDividsToDB } = require('../utils/dividendUtils');
+        for (const ticker of tickers) {
+          try {
+            const { data } = await axios.get(
+              `https://brapi.dev/api/quote/${ticker}?token=${BRAPI_TOKEN}&dividends=true`,
+              { timeout: 12000 }
+            );
+            const lista = brapiDividsToDB(data?.results?.[0]?.dividendsData?.cashDividends || []);
+            for (const { exDate, paymentDate, rate } of lista) {
+              await pool.query(
+                `INSERT INTO dividends (user_id, ticker, ex_date, payment_date, value_per_share)
+                 VALUES ($1,$2,$3,$4,$5)
+                 ON CONFLICT (user_id, ticker, ex_date)
+                 DO UPDATE SET value_per_share = EXCLUDED.value_per_share, payment_date = EXCLUDED.payment_date`,
+                [userId, ticker, exDate, paymentDate || null, rate]
+              );
+            }
+          } catch (_) {}
+        }
+        await pool.query(
+          `UPDATE user_profiles SET last_dividends_sync = NOW() WHERE user_id = $1`, [userId]
+        );
+        console.log(`[portfolio] dividendos sync background OK — ${tickers.length} tickers`);
+      } catch (_) {}
+    });
+
     // Busca em paralelo: preços ao vivo + dados da tabela central + dividendos do usuário
     const [
       precos,
@@ -445,7 +482,8 @@ router.get('/rentabilidade/:ticker', validateTicker, async (req, res) => {
   const userId = getUserId(req);
   try {
     const { rows: aportes } = await pool.query(
-      'SELECT * FROM contributions WHERE ticker = $1 AND user_id = $2 ORDER BY date',
+      `SELECT *, (quantity::numeric * price_paid::numeric) AS total
+       FROM contributions WHERE ticker = $1 AND user_id = $2 ORDER BY date`,
       [ticker, userId]
     );
     const { rows: divs } = await pool.query(
@@ -458,7 +496,7 @@ router.get('/rentabilidade/:ticker', validateTicker, async (req, res) => {
     let totalInvestido = 0;
     let totalCotas = 0;
     for (const a of aportes) {
-      totalInvestido += parseFloat(a.total);
+      totalInvestido += parseFloat(a.total || 0);
       totalCotas += parseFloat(a.quantity);
     }
 
@@ -529,7 +567,8 @@ router.get('/rentabilidade', async (req, res) => {
     if (!tickers.length) return res.json({ tickers: [], total: {} });
 
     const { rows: aportes } = await pool.query(
-      'SELECT * FROM contributions WHERE ticker = ANY($1) AND user_id = $2',
+      `SELECT *, (quantity::numeric * price_paid::numeric) AS total
+       FROM contributions WHERE ticker = ANY($1) AND user_id = $2`,
       [tickers, userId]
     );
     const { rows: divs } = await pool.query(
@@ -912,20 +951,50 @@ router.get('/benchmark', authMiddleware, async (req, res) => {
     );
     if (!contribs.length) return res.json({ series: [] });
 
-    // 2. Buscar IBOV mensal do Yahoo Finance
-    let ibovMap = {};
+    // 2. Buscar IBOV e IFIX mensais — lê de macro_snapshot (atualizado pelo scraping-job a cada 6h)
+    //    Fallback: Yahoo Finance direto (somente se tabela vazia ou desatualizada)
+    let ibovMap = {}, ifixMap = {};
     try {
-      const { data } = await axios.get(
-        'https://query1.finance.yahoo.com/v8/finance/chart/%5EBVSP?range=5y&interval=1mo',
-        { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0' } }
+      const { rows: snaps } = await pool.query(
+        `SELECT symbol, data FROM macro_snapshot
+         WHERE symbol IN ('IBOV','IFIX')
+           AND updated_at > NOW() - INTERVAL '13 hours'`
       );
-      const r = data.chart.result[0];
-      r.timestamp.forEach((t, i) => {
-        const mes = new Date(t * 1000).toISOString().substring(0, 7);
-        const close = r.indicators.quote[0].close[i];
-        if (close) ibovMap[mes] = close;
-      });
+      for (const s of snaps) {
+        if (s.symbol === 'IBOV') ibovMap = s.data;
+        if (s.symbol === 'IFIX') ifixMap = s.data;
+      }
     } catch (_) {}
+
+    // Fallback: Yahoo Finance direto (quando macro_snapshot ainda está vazio)
+    if (!Object.keys(ibovMap).length) {
+      try {
+        const { data } = await axios.get(
+          'https://query1.finance.yahoo.com/v8/finance/chart/%5EBVSP?range=5y&interval=1mo',
+          { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0' } }
+        );
+        const r = data.chart.result[0];
+        r.timestamp.forEach((t, i) => {
+          const mes = new Date(t * 1000).toISOString().substring(0, 7);
+          const close = r.indicators.quote[0].close[i];
+          if (close) ibovMap[mes] = close;
+        });
+      } catch (_) {}
+    }
+    if (!Object.keys(ifixMap).length) {
+      try {
+        const { data } = await axios.get(
+          'https://query1.finance.yahoo.com/v8/finance/chart/IFIX.SA?range=5y&interval=1mo',
+          { timeout: 12000, headers: { 'User-Agent': 'Mozilla/5.0' } }
+        );
+        const r = data.chart.result[0];
+        r.timestamp.forEach((t, i) => {
+          const mes = new Date(t * 1000).toISOString().substring(0, 7);
+          const close = r.indicators.quote[0].close[i];
+          if (close) ifixMap[mes] = close;
+        });
+      } catch (_) {}
+    }
 
     // 3. Gerar série mensal desde o primeiro aporte
     const primeiroMes = contribs[0].date.substring(0, 7);
@@ -970,7 +1039,7 @@ router.get('/benchmark', authMiddleware, async (req, res) => {
     }
 
     // 4. Simular: para cada mês, acumular aportes e rendimentos
-    let cdiTotal = 0, poupTotal = 0, ibovUnits = 0;
+    let cdiTotal = 0, poupTotal = 0, ibovUnits = 0, ifixUnits = 0;
     const aportesPorMes = {};
     for (const c of contribs) {
       const mes = c.date.substring(0, 7);
@@ -1013,14 +1082,19 @@ router.get('/benchmark', authMiddleware, async (req, res) => {
       if (aporte > 0 && ibovPrice) ibovUnits += aporte / ibovPrice;
       const ibovValor = ibovPrice ? ibovUnits * ibovPrice : null;
 
+      // IFIX: compra unidades do índice no mês do aporte
+      const ifixPrice = ifixMap[mes];
+      if (aporte > 0 && ifixPrice) ifixUnits += aporte / ifixPrice;
+      const ifixValor = ifixPrice ? ifixUnits * ifixPrice : null;
+
       series.push({
         mes,
-        investido:      Math.round(investidoAcum),
         carteira:       Math.round(investidoAcum + provAcum),
         carteiraReinv:  Math.round(reinvTotal),
         cdi:            Math.round(cdiTotal),
         poupanca:       Math.round(poupTotal),
         ibov:           ibovValor ? Math.round(ibovValor) : null,
+        ifix:           ifixValor ? Math.round(ifixValor) : null,
       });
     }
 
@@ -1546,7 +1620,7 @@ async function getProximoRendimento(ticker) {
     };
 
     const hoje = new Date().toISOString().substring(0, 10);
-    const limite = new Date(Date.now() - 35 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
+    const limite = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString().substring(0, 10);
 
     const parsed = models
       .map(m => ({
