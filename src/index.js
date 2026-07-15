@@ -23,6 +23,8 @@ const cors    = require('cors');
 const helmet  = require('helmet');
 const { globalLimiter, carteiraLimiter, rankingLimiter, aiLimiter } = require('./middleware/rateLimiter');
 const { sentryErrorHandler, captureError } = require('./services/sentry');
+const auth = require('./middleware/auth');
+const { attachPlan } = require('./middleware/requirePlan');
 
 const app  = express();
 const PORT = process.env.PORT || 3002;
@@ -46,12 +48,15 @@ app.use(express.json());
 app.use('/api', globalLimiter);
 
 // ── Rotas com rate limiters por tier ─────────────────────────────────────────
-app.use('/api/fiis/portfolio',      carteiraLimiter);
+// Rotas protegidas: auth + attachPlan ANTES do limiter → limite reflete o plano
+// (auth é idempotente; o router interno não revalida o JWT).
+app.use('/api/fiis/portfolio',      auth, attachPlan, carteiraLimiter);
+app.use('/api/recommendations',     auth, attachPlan, aiLimiter);
+// Rotas públicas de mercado: limite por IP (plano free)
 app.use('/api/fiis/market',         rankingLimiter);
 app.use('/api/fiis/market-for-profile', rankingLimiter);
 app.use('/api/fiis/top10',          rankingLimiter);
 app.use('/api/fiis/top50',          rankingLimiter);
-app.use('/api/recommendations',     aiLimiter);
 
 app.use('/api/fiis',                require('./routes/fiis'));
 app.use('/api/profile',             require('./routes/profile'));
@@ -61,6 +66,7 @@ app.use('/api/simulated-portfolio', require('./routes/simulatedPortfolio'));
 app.use('/api/admin',               require('./routes/admin'));
 app.use('/api/admin/brapi',         require('./routes/brapiAdmin'));
 app.use('/api/activity',            require('./routes/activity'));
+app.use('/api/billing',             require('./routes/billing'));
 if (process.env.SENTRY_DSN) Sentry.setupExpressErrorHandler(app);
 app.use(sentryErrorHandler());
 app.use(require('./middleware/errorHandler'));
@@ -546,6 +552,46 @@ async function runMigrations() {
       ano_mes    VARCHAR(7) NOT NULL,
       contador   INTEGER DEFAULT 0,
       PRIMARY KEY (user_id, recurso, ano_mes)
+    )
+  `);
+
+  // ── Sprint 14: Estrutura de pagamento / assinaturas (Asaas) ─────────────────
+  await run('user_profiles_plan_cols', `
+    ALTER TABLE user_profiles
+      ADD COLUMN IF NOT EXISTS plan            VARCHAR(20) DEFAULT 'free'
+        CHECK (plan IN ('free','pro','premium')),
+      ADD COLUMN IF NOT EXISTS plan_status     VARCHAR(20),
+      ADD COLUMN IF NOT EXISTS plan_expires_at TIMESTAMPTZ
+  `);
+
+  await run('subscriptions_table', `
+    CREATE TABLE IF NOT EXISTS subscriptions (
+      id                    UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      user_id               TEXT NOT NULL,
+      plan                  VARCHAR(20) NOT NULL CHECK (plan IN ('pro','premium')),
+      asaas_customer_id     VARCHAR(60),
+      asaas_subscription_id VARCHAR(60) UNIQUE,
+      status                VARCHAR(20) NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending','active','overdue','canceled')),
+      value                 NUMERIC(10,2),
+      cycle                 VARCHAR(20),
+      created_at            TIMESTAMPTZ DEFAULT NOW(),
+      updated_at            TIMESTAMPTZ DEFAULT NOW()
+    )
+  `);
+  await run('subscriptions_user_idx', `
+    CREATE INDEX IF NOT EXISTS idx_subscriptions_user ON subscriptions(user_id, status)
+  `);
+
+  await run('payment_events_table', `
+    CREATE TABLE IF NOT EXISTS payment_events (
+      id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+      provider    VARCHAR(20) NOT NULL DEFAULT 'asaas',
+      event_type  VARCHAR(60),
+      external_id VARCHAR(120) NOT NULL,
+      payload     JSONB,
+      created_at  TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE (provider, external_id)
     )
   `);
 
