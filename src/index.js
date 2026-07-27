@@ -572,6 +572,21 @@ async function runMigrations() {
     ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS last_dividends_sync TIMESTAMPTZ
   `);
 
+  await run('user_profiles_plan', `
+    ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS plan VARCHAR(10) NOT NULL DEFAULT 'free'
+  `);
+
+  await run('user_profiles_plan_check', `
+    DO $$ BEGIN
+      IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'user_profiles_plan_check'
+      ) THEN
+        ALTER TABLE user_profiles
+          ADD CONSTRAINT user_profiles_plan_check CHECK (plan IN ('free','pro','premium'));
+      END IF;
+    END $$
+  `);
+
   // ── contributions: garante coluna total (calculada) ──────────────────────────
   await run('contributions_total_col', `
     ALTER TABLE contributions
