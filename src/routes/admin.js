@@ -418,4 +418,65 @@ router.post('/varredura-completa', async (req, res) => {
   }
 });
 
+// ── Gestão de planos ──────────────────────────────────────────────────────────
+
+// GET /api/admin/plans — lista todos os usuários com seu plano atual
+router.get('/plans', async (req, res) => {
+  try {
+    const { createClient } = require('@supabase/supabase-js');
+    const supaAdmin = createClient(
+      process.env.SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY,
+      { auth: { autoRefreshToken: false, persistSession: false } }
+    );
+
+    const [{ data: authData }, profilesRes] = await Promise.all([
+      supaAdmin.auth.admin.listUsers({ perPage: 1000 }),
+      pool.query(`SELECT user_id, plan FROM user_profiles`),
+    ]);
+
+    const planMap = {};
+    for (const p of profilesRes.rows) planMap[p.user_id] = p.plan;
+
+    const adminIds = new Set(
+      (process.env.ADMIN_USER_IDS || 'd2083b36-3899-4287-9649-e4b20e1f9103')
+        .split(',').map(s => s.trim()).filter(Boolean)
+    );
+
+    const users = (authData.users || []).map(u => ({
+      id:         u.id,
+      email:      u.email,
+      created_at: u.created_at,
+      plan:       adminIds.has(u.id) ? 'premium' : (planMap[u.id] ?? 'free'),
+      is_admin:   adminIds.has(u.id),
+    }));
+
+    res.json(users);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// PUT /api/admin/plans/:userId — altera o plano de um usuário
+router.put('/plans/:userId', async (req, res) => {
+  const { userId } = req.params;
+  const { plan }   = req.body;
+
+  if (!['free', 'pro', 'premium'].includes(plan)) {
+    return res.status(400).json({ error: 'Plano inválido. Use: free, pro ou premium' });
+  }
+
+  try {
+    await pool.query(
+      `INSERT INTO user_profiles (user_id, plan)
+       VALUES ($1, $2)
+       ON CONFLICT (user_id) DO UPDATE SET plan = $2, updated_at = NOW()`,
+      [userId, plan]
+    );
+    res.json({ ok: true, userId, plan });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 module.exports = router;
