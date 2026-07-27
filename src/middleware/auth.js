@@ -8,6 +8,11 @@ const supabase = createClient(
   process.env.SUPABASE_ANON_KEY
 );
 
+// Admins têm plan='premium' independente do banco
+const ADMIN_USER_IDS = new Set(
+  (process.env.ADMIN_USER_IDS || 'd2083b36-3899-4287-9649-e4b20e1f9103').split(',').map(s => s.trim()).filter(Boolean)
+);
+
 async function authMiddleware(req, res, next) {
   const token = req.headers.authorization?.replace('Bearer ', '').trim();
 
@@ -29,9 +34,11 @@ async function authMiddleware(req, res, next) {
       `SELECT plan FROM user_profiles WHERE user_id = $1`,
       [user.id]
     );
-    req.user = { id: user.id, plan: rows[0]?.plan ?? 'free' };
+    const plan = ADMIN_USER_IDS.has(user.id) ? 'premium' : (rows[0]?.plan ?? 'free');
+    req.user = { id: user.id, plan, isAdmin: ADMIN_USER_IDS.has(user.id) };
   } catch (_) {
-    req.user = { id: user.id, plan: 'free' };
+    const isAdmin = ADMIN_USER_IDS.has(user.id);
+    req.user = { id: user.id, plan: isAdmin ? 'premium' : 'free', isAdmin };
   }
 
   next();
