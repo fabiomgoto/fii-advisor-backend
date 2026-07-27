@@ -257,6 +257,8 @@ router.get('/portfolio', async (req, res) => {
   }
 });
 
+const PLAN_MAX_FIIS = { free: 5, pro: 20, premium: Infinity };
+
 // POST /api/fiis/portfolio — adicionar FII
 router.post('/portfolio', async (req, res) => {
   const { ticker, name, segment } = req.body;
@@ -267,6 +269,29 @@ router.post('/portfolio', async (req, res) => {
   }
   const userId = getUserId(req);
   try {
+    // Verifica limite de FIIs por plano (ON CONFLICT faz upsert — não conta como novo)
+    const plan   = req.user?.plan ?? 'free';
+    const maxFiis = PLAN_MAX_FIIS[plan] ?? PLAN_MAX_FIIS.free;
+    if (maxFiis < Infinity) {
+      const { rows: existing } = await pool.query(
+        `SELECT COUNT(*) FROM portfolio_fiis WHERE user_id = $1 AND sold_at IS NULL`,
+        [userId]
+      );
+      const { rows: alreadyIn } = await pool.query(
+        `SELECT 1 FROM portfolio_fiis WHERE user_id = $1 AND ticker = $2`,
+        [userId, tickerNorm]
+      );
+      if (!alreadyIn.length && parseInt(existing[0].count) >= maxFiis) {
+        return res.status(403).json({
+          error:      'plan_limit_exceeded',
+          message:    `Seu plano ${plan} permite até ${maxFiis} FIIs na carteira.`,
+          limit:      maxFiis,
+          plan,
+          upgradeUrl: process.env.UPGRADE_URL || 'https://fiiadvisor.com.br/planos',
+        });
+      }
+    }
+
     const { rows } = await pool.query(
       `INSERT INTO portfolio_fiis (ticker, name, segment, user_id)
        VALUES ($1, $2, $3, $4)
