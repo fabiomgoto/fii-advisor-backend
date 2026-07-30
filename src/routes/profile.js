@@ -60,14 +60,15 @@ router.get('/', async (req, res) => {
 router.put('/', async (req, res) => {
   try {
     const userId = getUserId(req);
-    const { nome, avatar_url, apresentacao_vista } = req.body;
+    const { nome, avatar_url, apresentacao_vista, notif_data_com } = req.body;
 
     // Monta SET dinâmico
     const sets = ['updated_at = NOW()'];
     const vals = [userId];
-    if (nome             !== undefined) { vals.push(nome);             sets.push(`nome = $${vals.length}`); }
-    if (avatar_url       !== undefined) { vals.push(avatar_url);       sets.push(`avatar_url = $${vals.length}`); }
+    if (nome               !== undefined) { vals.push(nome);               sets.push(`nome = $${vals.length}`); }
+    if (avatar_url         !== undefined) { vals.push(avatar_url);         sets.push(`avatar_url = $${vals.length}`); }
     if (apresentacao_vista !== undefined) { vals.push(apresentacao_vista); sets.push(`apresentacao_vista = $${vals.length}`); }
+    if (notif_data_com     !== undefined) { vals.push(notif_data_com);     sets.push(`notif_data_com = $${vals.length}`); }
 
     const { rows } = await pool.query(
       `INSERT INTO user_profiles (user_id, updated_at)

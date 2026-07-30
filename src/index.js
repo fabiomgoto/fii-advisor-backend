@@ -628,6 +628,16 @@ function iniciarScheduler() {
   const pool = require('./db/connection');
   const { sincronizarTodosProventos } = require('./scheduler/fii-proventos-sync');
 
+  // Alertas de data COM: diariamente às 8h (Pro/Premium com notif_data_com=true)
+  cron.schedule('0 8 * * 1-5', async () => {
+    try {
+      const { dispararAlertasCOM } = require('./scheduler/com-alert');
+      await dispararAlertasCOM();
+    } catch (err) {
+      console.error('[CRON] Erro alertas COM:', err.message);
+    }
+  }, { timezone: 'America/Sao_Paulo' });
+
   // Sync de proventos: diariamente às 20h30 (Brasília)
   cron.schedule('30 20 * * *', async () => {
     console.log('[CRON] Sincronizando proventos de todos os usuários...');
