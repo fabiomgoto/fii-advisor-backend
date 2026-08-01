@@ -61,6 +61,7 @@ app.use('/api/simulated-portfolio', require('./routes/simulatedPortfolio'));
 app.use('/api/admin',               require('./routes/admin'));
 app.use('/api/admin/brapi',         require('./routes/brapiAdmin'));
 app.use('/api/activity',            require('./routes/activity'));
+app.use('/api/relatorio',           require('./routes/relatorio'));
 if (process.env.SENTRY_DSN) Sentry.setupExpressErrorHandler(app);
 app.use(sentryErrorHandler());
 app.use(require('./middleware/errorHandler'));
