@@ -42,6 +42,8 @@ app.use(helmet({
 }));
 app.use(cors({ origin: true, methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'] }));
 app.options('*', cors({ origin: true }));
+// Webhook Stripe: precisa do body raw ANTES do express.json()
+app.use('/api/billing/webhook', express.raw({ type: 'application/json' }));
 app.use(express.json());
 app.use('/api', globalLimiter);
 
@@ -62,6 +64,7 @@ app.use('/api/admin',               require('./routes/admin'));
 app.use('/api/admin/brapi',         require('./routes/brapiAdmin'));
 app.use('/api/activity',            require('./routes/activity'));
 app.use('/api/relatorio',           require('./routes/relatorio'));
+app.use('/api/billing',             require('./routes/billing'));
 if (process.env.SENTRY_DSN) Sentry.setupExpressErrorHandler(app);
 app.use(sentryErrorHandler());
 app.use(require('./middleware/errorHandler'));
@@ -618,6 +621,12 @@ async function runMigrations() {
       contador   INTEGER DEFAULT 0,
       PRIMARY KEY (user_id, recurso, ano_mes)
     )
+  `);
+
+  // ── Stripe: coluna stripe_customer_id em user_profiles ──────────────────────
+  await run('user_profiles_stripe', `
+    ALTER TABLE user_profiles
+      ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT
   `);
 
   console.log('[MIGRATIONS] concluídas');
